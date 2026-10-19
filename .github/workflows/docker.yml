@@ -1,8 +1,8 @@
 name: Build & Push Image
 
 # 触发规则（按需裁剪）：
-#   - push 到 main        → 构建 linux/amd64 + linux/arm64，推 latest、main、sha-xxxx
-#   - push tag v1.2.3     → 额外推 1.2.3、1.2 两个版本号标签
+#   - push 到 main        → 构建 linux/amd64 + linux/arm64，推 main、sha-xxxx
+#   - push tag v1.2.3     → 额外推 1.2.3、1.2 两个版本号标签，并移动 latest
 #   - Pull Request        → 只构建校验，不推送
 #   - 手动触发（Actions 页面上的 Run workflow）
 on:
@@ -14,9 +14,8 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY: ghcr.io
-  # github.repository 就是 haihaipypy/autodocker，镜像名会自动对上
-  IMAGE_NAME: ${{ github.repository }}
+  # GHCR：免配置，仓库自带 GITHUB_TOKEN 就能推
+  GHCR_IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   build:
@@ -37,20 +36,42 @@ jobs:
       - name: 安装 Buildx
         uses: docker/setup-buildx-action@v3
 
+      # 镜像名列表：GHCR 恒定；Docker Hub 只在配了 secrets 时追加。
+      # 用一段 shell 拼多行 output，比在 metadata-action 里塞条件表达式可靠。
+      - name: 计算目标镜像列表
+        id: images
+        run: |
+          {
+            echo "list<<IMAGES_EOF"
+            echo "$GHCR_IMAGE"
+            if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
+              echo "${{ secrets.DOCKERHUB_USERNAME }}/autodocker"
+            fi
+            echo "IMAGES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: 登录 GHCR
         # PR 来自 fork 时没有写权限，跳过登录
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 登录 Docker Hub
+        # 没配 secrets 就跳过，此时只发 GHCR（不会让整条流水线失败）
+        if: github.event_name != 'pull_request' && secrets.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: 生成镜像标签
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.images.outputs.list }}
           # 注意：tags 里不能写 # 注释 —— 它整块会被当成标签规则列表逐行解析，
           # 注释行会被当成非法规则。要注释就写在外面（像这一行）。
           # 分支构建只给 branch / sha，不抢 latest；

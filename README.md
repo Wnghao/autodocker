@@ -75,7 +75,15 @@ docker run -d --name autodocker --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$PWD/data:/data" \
   -e TZ=Asia/Shanghai -e SELF_CONTAINER=autodocker \
-  ghcr.io/haihaipypy/autodocker:latest
+  haihaipypy/autodocker:latest
+```
+
+**默认走 Docker Hub**（`haihaipypy/autodocker`）——国内拉取比 `ghcr.io` 快得多，
+也正好能用上 Docker 守护进程已配的加速站。GitHub Container Registry 同步发布，
+拉不动 Docker Hub 时换这个：
+
+```bash
+docker pull ghcr.io/haihaipypy/autodocker:latest
 ```
 
 要一开始就带密码，加一行 `-e ADMIN_PASSWORD='你的密码'`（之后在网页里改也可以，数据库里的值优先）。

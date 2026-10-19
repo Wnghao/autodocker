@@ -6,7 +6,8 @@
 
 ## 方式一：预构建镜像（最省事）
 
-CI 在每次推 `v*` tag 时构建 **linux/amd64 + linux/arm64** 双架构镜像，推到 GitHub Container Registry：
+CI 在每次推 `v*` tag 时构建 **linux/amd64 + linux/arm64** 双架构镜像，
+**同时推到 Docker Hub 与 GitHub Container Registry**：
 
 ```bash
 docker run -d --name autodocker \
@@ -16,10 +17,13 @@ docker run -d --name autodocker \
   -v "$PWD/data:/data" \
   -e TZ=Asia/Shanghai \
   -e SELF_CONTAINER=autodocker \
-  ghcr.io/haihaipypy/autodocker:latest
+  haihaipypy/autodocker:latest
 ```
 
 启动后访问 `http://<你的机器IP>:17777`。
+
+> **默认用 Docker Hub**：国内拉取比 `ghcr.io` 快得多，也能直接吃 Docker 守护进程里
+> 已配好的加速站。拉不动时换 GHCR：`ghcr.io/haihaipypy/autodocker:latest`，两者内容完全一致。
 
 **默认零配置**：不设密码、不填飞书，起来就能用。要飞书通知或要加登录门，
 进「设置」页填即可（存数据库、即时生效）。要一开始就带密码，加一行
@@ -35,8 +39,8 @@ docker run -d --name autodocker \
 | `main` | main 分支最新构建，紧跟开发进度，可能夹带未完成的改动 |
 | `sha-1a2b3c4` | 对应提交，回滚排查用 |
 
-> 国内拉 `ghcr.io` 可能超时。要么给 Docker 守护进程配 `ghcr.io` 的加速，
-> 要么用下面的方式二本地构建 —— 反正就一条 `docker compose up -d --build`。
+> Docker Hub 匿名拉取按 IP 限流（每 6 小时 100 次），升级频繁时可以 `docker login` 后拉。
+> 拉不动就走下面的方式二本地构建，反正就一条 `docker compose up -d --build`。
 
 ## 方式二：本地构建（Compose）
 
@@ -61,7 +65,7 @@ docker compose up -d
 ```yaml
 services:
   autodocker:
-    image: ghcr.io/haihaipypy/autodocker:latest
+    image: haihaipypy/autodocker:1.2.3   # 或 ghcr.io/haihaipypy/autodocker:1.2.3
     # build: .
 ```
 

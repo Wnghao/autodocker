@@ -84,16 +84,42 @@ git push origin v1.2.3
 > 成为用户拉到的「最新版」。
 
 会构建 `linux/amd64` + `linux/arm64` 双架构（飞牛有 x86 也有 ARM 机型），
-推到 `ghcr.io/haihaipypy/autodocker`。不用配任何 secret —— 用的是仓库自带的
-`GITHUB_TOKEN`，workflow 里已声明 `packages: write`。
+**同时推到 Docker Hub 与 GHCR**：
 
-> **第一次发布后必须手动改一次可见性。**
-> GHCR 新建的包默认是 **private**，别人 `docker pull` 会报 `denied`。
-> 打开 `https://github.com/haihaipypy?tab=packages` → 点进 `autodocker` →
-> 右下角 `Package settings` → `Change visibility` → 选 `Public` 并确认。
-> 之后发布的版本会沿用这个设置，只需改一次。
+| 仓库 | 地址 | 说明 |
+| --- | --- | --- |
+| Docker Hub | `haihaipypy/autodocker` | **默认推荐**，国内快，能吃加速站；匿名拉取按 IP 限流 |
+| GHCR | `ghcr.io/haihaipypy/autodocker` | 用仓库自带 `GITHUB_TOKEN` 推，不占 Docker Hub 配额 |
 
-## 六、建 Release 并上传 fpk
+Docker Hub 那一段需要一次性配置两个 secret，见下一节；没配时 workflow 会自动只发 GHCR，
+不会让流水线失败。
+
+> GHCR 的包在**公开仓库**下默认就是可匿名拉取的，实测 `docker pull` 不需要额外改可见性。
+> 若从包页面看到 private，再去 `Package settings → Change visibility` 改成 Public。
+
+## 六、一次性配置 Docker Hub 发布
+
+1. **建仓库**：登录 [hub.docker.com](https://hub.docker.com) → `Create repository` →
+   名称填 `autodocker` → Visibility 选 **Public**。
+2. **建 access token**：右上头像 → `Account settings` → `Personal access tokens` →
+   `Generate new token` → 描述写 `github-actions` → 权限选 **Read & Write** → 复制（只显示一次）。
+   **不要用登录密码**，密码在 CI 里既不能用也不安全。
+3. **加 secrets**：GitHub 仓库 → `Settings` → `Secrets and variables` → `Actions` →
+   `New repository secret`，加两条：
+
+   | Name | Value |
+   | --- | --- |
+   | `DOCKERHUB_USERNAME` | 你的 Docker Hub 用户名（如 `haihaipypy`） |
+   | `DOCKERHUB_TOKEN` | 上一步复制的 token |
+
+4. 推一次 tag 验证：Docker Hub 仓库页的 `Tags` 里应该出现 `1.2.3`、`1.2`、`latest`、
+   `main`、`sha-xxxxxxx`。
+
+> 镜像名由 workflow 自动拼成 `<DOCKERHUB_USERNAME>/autodocker`，
+> 换用户名只改 secret，不用动代码。
+> 若 Docker Hub 账号属于某个组织，把 secret 填成 `组织名`，并确认该账号有推送权限。
+
+## 七、建 Release 并上传 fpk
 
 ```bash
 gh release create v1.2.3 Autodocker.fpk \
@@ -106,37 +132,6 @@ gh release create v1.2.3 Autodocker.fpk \
 
 Release 说明按「新增 / 改进 / 修复」三段写，把 `manifest` 的 changelog 展开成可读条目。
 
-## 七、可选：同时发 Docker Hub
-
-GHCR 免申请、和仓库绑在一起，公开后拉取不限速，一般不需要 Docker Hub。
-确实要发就在 workflow 里加两步：
-
-```yaml
-      - name: 登录 Docker Hub
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: 构建并推送（含 Docker Hub）
-        uses: docker/build-push-action@v6
-        with:
-          # ...
-```
-
-并把 `metadata-action` 的 `images:` 改成两行（换行分隔）：
-
-```yaml
-          images: |
-            ghcr.io/${{ github.repository }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/autodocker
-```
-
-secrets 在仓库 Settings → Secrets and variables → Actions 里加
-`DOCKERHUB_USERNAME` 与 `DOCKERHUB_TOKEN`（Docker Hub 后台生成的 access token，
-不是登录密码）。
-
 ## 八、发版前 checklist
 
 - [ ] `fnos/manifest` 的 `version` 与即将打的 tag 一致
@@ -144,6 +139,5 @@ secrets 在仓库 Settings → Secrets and variables → Actions 里加
 - [ ] 删过 `fnos/app/bin/autodocker` 再打包
 - [ ] `go test ./...` 与 `go vet ./...` 通过
 - [ ] main 推送后 Actions 通过
-- [ ] tag 推送后双架构镜像推送成功
-- [ ] GHCR 包可见性为 Public（首次）
+- [ ] tag 推送后双架构镜像在 **Docker Hub 与 GHCR** 都出现，且 `latest` 已移动
 - [ ] Release 附上了 `Autodocker.fpk`，且解包能核对到新版本号
