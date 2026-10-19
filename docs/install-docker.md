@@ -35,7 +35,7 @@ docker run -d --name autodocker \
 | 标签 | 含义 |
 | --- | --- |
 | `latest` | **最近一次打 tag 的正式版本**（跟着 `v*` tag 走，不跟 main） |
-| `1.2.3` / `1.2` | 对应 `v1.2.3` 这个 tag，**部署建议钉这个** |
+| `1.2.3` / `1.2` | 对应 `v1.2.3` 这个 tag，想锁死版本、不跟着自动往前时用 |
 | `main` | main 分支最新构建，紧跟开发进度，可能夹带未完成的改动 |
 | `sha-1a2b3c4` | 对应提交，回滚排查用 |
 
@@ -59,7 +59,7 @@ docker compose up -d
 services:
   autodocker:
     container_name: autodocker
-    image: haihaipypy/autodocker:1.2.3
+    image: haihaipypy/autodocker:latest
     restart: unless-stopped
     ports:
       - "17777:17777"
@@ -81,6 +81,10 @@ services:
 访问 `http://<IP>:17777`。
 
 换端口改 compose 里两处：`ports:` 的 `"17777:17777"` 与 `PORT=17777`。
+
+**升级**：`docker compose pull && docker compose up -d`，配置与数据都不动。
+`latest` 只跟着正式版本（`v*` tag）走，main 上有半成品也不会被它带上。
+想锁死版本就把 `:latest` 换成具体版本号（如 `:1.2.3`），代价是每次升级要手动改这一行。
 
 ## 方式三：从源码本地构建
 

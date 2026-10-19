@@ -2,8 +2,9 @@ services:
   autodocker:
     container_name: autodocker
     # 默认直接用官方镜像：不需要源码、不需要构建，把这一份文件丢到任意目录就能起。
-    # 钉版本号而不是 latest —— 出问题想回滚，改这一行就行。
-    image: haihaipypy/autodocker:1.2.3
+    # 默认 latest：只跟着正式版本（v* tag）走，`docker compose pull` 就能升级，不用改文件。
+    # 想锁死某个版本、不跟着自动往前，就把 latest 换成具体版本号，例如 1.2.3。
+    image: haihaipypy/autodocker:latest
     # 想从源码本地构建（改代码要测）就把上面 image 注释掉、打开下面两行。
     # 构建需要 Dockerfile 与整个仓库，只拷了 compose 文件是构建不出来的。
     # build: .

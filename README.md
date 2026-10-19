@@ -66,7 +66,7 @@
 services:
   autodocker:
     container_name: autodocker
-    image: haihaipypy/autodocker:1.2.3
+    image: haihaipypy/autodocker:latest
     restart: unless-stopped
     ports:
       - "17777:17777"
@@ -116,8 +116,9 @@ docker pull ghcr.io/haihaipypy/autodocker:latest
 要一开始就带密码，加一行 `-e ADMIN_PASSWORD='你的密码'`（之后在网页里改也可以，数据库里的值优先）。
 换端口记得容器内 `PORT` 一起改：`-p 18000:18000 -e PORT=18000`。
 
-双架构 `linux/amd64` + `linux/arm64`。`latest` 跟着 `v*` tag 走，部署建议钉版本号
-（如 `:1.2.3`）。
+双架构 `linux/amd64` + `linux/arm64`。`latest` 只跟着正式版本（`v*` tag）走，
+升级就是 `docker compose pull && docker compose up -d`。
+要锁死版本、不跟着自动往前，把 `:latest` 换成具体版本号（如 `:1.2.3`）即可。
 
 ## 使用
 
