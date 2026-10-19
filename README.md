@@ -2,6 +2,11 @@
 
 **Docker 镜像更新监测 · 飞书确认 · 一键自动重建**
 
+[![Release](https://img.shields.io/github/v/release/haihaipypy/autodocker?label=release&color=blue)](https://github.com/haihaipypy/autodocker/releases/latest)
+[![Docker Pulls](https://img.shields.io/docker/pulls/haihaipypy/autodocker)](https://hub.docker.com/r/haihaipypy/autodocker)
+[![License](https://img.shields.io/github/license/haihaipypy/autodocker)](LICENSE)
+[![Go](https://img.shields.io/github/go-mod/go-version/haihaipypy/autodocker)](go.mod)
+
 监测本机容器使用的镜像是否有了新版本，把提醒推到飞书；你在群里点一下「立即更新」按钮，
 服务就会拉取新镜像并按原配置重建容器 —— 挂载、端口、网络、环境变量全部保留，
 失败自动回滚。本机没人使用的镜像也一并列出来，随时可以一键清理掉。

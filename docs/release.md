@@ -132,6 +132,35 @@ gh release create v1.2.3 Autodocker.fpk \
 
 Release 说明按「新增 / 改进 / 修复」三段写，把 `manifest` 的 changelog 展开成可读条目。
 
+### 用 API 上传时注意两件事
+
+**1. 附件必须发原始字节，不要自己拼 multipart。**
+
+GitHub 的 uploads 接口支持直接 POST 二进制：
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary "@Autodocker.fpk" \
+  "https://uploads.github.com/repos/haihaipypy/autodocker/releases/$REL_ID/assets?name=Autodocker.fpk"
+```
+
+手写 multipart 时只要有一处格式不被接受，GitHub **不报错**，而是把整个请求体
+（含 boundary 与表单头）当作文件内容原样存下 —— 附件大小会多出几百字节，
+下载回来 head 一看开头是 `------boundary` 而不是 `1f8b`（gzip 魔数）。
+
+**2. 换过同名附件后，下载要先绕开 CDN 缓存。**
+
+同名 asset 删除后重传，`releases/download/...` 这个地址会继续返回**旧文件**，
+哈希与刚上传的完全不匹配。加个时间戳参数即可拿到新内容：
+
+```bash
+curl -sL -o dl.fpk "https://github.com/OWNER/REPO/releases/download/v1.2.3/Autodocker.fpk?t=$(date +%s)"
+```
+
+验完再决定要不要报警，别被缓存骗成「上传失败」。
+
 ## 八、发版前 checklist
 
 - [ ] `fnos/manifest` 的 `version` 与即将打的 tag 一致
@@ -141,3 +170,4 @@ Release 说明按「新增 / 改进 / 修复」三段写，把 `manifest` 的 ch
 - [ ] main 推送后 Actions 通过
 - [ ] tag 推送后双架构镜像在 **Docker Hub 与 GHCR** 都出现，且 `latest` 已移动
 - [ ] Release 附上了 `Autodocker.fpk`，且解包能核对到新版本号
+- [ ] 下载附件比对 sha256 与本地一致（不一致先加 `?t=<时间戳>` 排掉 CDN 缓存）
