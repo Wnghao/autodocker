@@ -58,17 +58,39 @@
 
 → [飞牛安装与排障](docs/install-fnos.md)
 
-### 2. Docker / Compose
+### 2. Docker Compose（不用源码）
+
+在任意目录建一个 `docker-compose.yml`：
+
+```yaml
+services:
+  autodocker:
+    container_name: autodocker
+    image: haihaipypy/autodocker:1.2.3
+    restart: unless-stopped
+    ports:
+      - "17777:17777"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/data
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=17777
+      - SELF_CONTAINER=autodocker
+```
+
+然后：
 
 ```bash
-git clone https://github.com/haihaipypy/autodocker.git
-cd autodocker
 docker compose up -d        # 访问 http://<IP>:17777
 ```
 
 **零配置可用**：默认端口 **17777**（避开 8080 这类几乎必被占用的端口），
 默认**不设访问密码、不填飞书**——起来就能在网页里看容器与镜像。
 要飞书通知或要加一道登录门，进「设置」里填即可，存数据库、即时生效、不用重启。
+
+> 仓库里的 `docker-compose.yml` 也是同一份（带完整注释与环境变量清单），可以下载后直接用。
+> 想从源码本地构建就注释掉 `image:`、打开 `build: .` —— 那条路需要整个仓库，光有 compose 文件构建不出来。
 
 → [Docker / Compose 部署与全部环境变量](docs/install-docker.md)
 

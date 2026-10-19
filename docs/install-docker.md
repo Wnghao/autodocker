@@ -40,14 +40,36 @@ docker run -d --name autodocker \
 | `sha-1a2b3c4` | 对应提交，回滚排查用 |
 
 > Docker Hub 匿名拉取按 IP 限流（每 6 小时 100 次），升级频繁时可以 `docker login` 后拉。
-> 拉不动就走下面的方式二本地构建，反正就一条 `docker compose up -d --build`。
+> 拉不动就走方式三本地构建，反正就一条 `docker compose up -d --build`。
 
-## 方式二：本地构建（Compose）
+## 方式二：Compose（推荐，不用源码）
+
+把仓库根目录的 `docker-compose.yml` 拷到任意目录就能跑：
 
 ```bash
-git clone https://github.com/haihaipypy/autodocker.git
-cd autodocker
+mkdir -p ~/autodocker && cd ~/autodocker
+curl -fsSL -o docker-compose.yml \
+  https://raw.githubusercontent.com/haihaipypy/autodocker/main/docker-compose.yml
 docker compose up -d
+```
+
+或者自己建一份最小版：
+
+```yaml
+services:
+  autodocker:
+    container_name: autodocker
+    image: haihaipypy/autodocker:1.2.3
+    restart: unless-stopped
+    ports:
+      - "17777:17777"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/data
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=17777
+      - SELF_CONTAINER=autodocker
 ```
 
 **不用改任何东西就能起**：`docker-compose.yml` 里 `ADMIN_PASSWORD` 与三个 `FEISHU_*` 一律留空
@@ -60,14 +82,20 @@ docker compose up -d
 
 换端口改 compose 里两处：`ports:` 的 `"17777:17777"` 与 `PORT=17777`。
 
-用预构建镜像就把 `build: .` 换成 `image:` 那一行：
+## 方式三：从源码本地构建
 
-```yaml
-services:
-  autodocker:
-    image: haihaipypy/autodocker:1.2.3   # 或 ghcr.io/haihaipypy/autodocker:1.2.3
-    # build: .
+只有改了代码要测才需要这条路 —— 它要整个仓库，**光有 compose 文件是构建不出来的**。
+
+```bash
+git clone https://github.com/haihaipypy/autodocker.git
+cd autodocker
+# 打开 docker-compose.yml，注释掉 image: 那一行、解开 build: .
+docker compose up -d --build
 ```
+
+> 如果看到 `failed to read dockerfile: open Dockerfile: no such file or directory`，
+> 就是这一类问题：当前目录里没有 `Dockerfile`。要么把 `image:` 用回去（不需要构建），
+> 要么 `git clone` 整个仓库再构建。单独拷一份 compose 文件是构建不了的。
 
 ## 关键配置项
 

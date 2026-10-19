@@ -1,10 +1,13 @@
 services:
   autodocker:
     container_name: autodocker
-    build: .
-    # 也可以直接使用预构建镜像（Docker Hub 为主，GHCR 同步发布）：
-    # image: haihaipypy/autodocker:1.2.3
-    # image: ghcr.io/haihaipypy/autodocker:1.2.3
+    # 默认直接用官方镜像：不需要源码、不需要构建，把这一份文件丢到任意目录就能起。
+    # 钉版本号而不是 latest —— 出问题想回滚，改这一行就行。
+    image: haihaipypy/autodocker:1.2.3
+    # 想从源码本地构建（改代码要测）就把上面 image 注释掉、打开下面两行。
+    # 构建需要 Dockerfile 与整个仓库，只拷了 compose 文件是构建不出来的。
+    # build: .
+    # image: autodocker:dev
     restart: unless-stopped
     ports:
       # 默认 17777，刻意避开 8080 / 8000 / 9000 这些几乎必被占用的端口。
