@@ -84,6 +84,11 @@ Dockerfile          多阶段构建（golang → alpine，纯静态二进制）
   表现为「登录成功却一直停在登录页」。新增浮层别删这条。
 - 列宽用 `flex: 0 0 <px>` 固定，否则「当前 / 可用 / 状态」会逐行错位。
 - `.btn.danger` 与 `.btn.ghost` 特异性相同 → 必须写 `.btn.danger:not(.ghost)`。
+- **`data-theme` 必须在 `<head>` 内联脚本里同步写入**，不能等 `app.js` 加载后再改，
+  否则深色主题会先闪一下白底。改这段脚本要保持同步执行、且排在样式表之后。
+- **禁用 `color-mix()`**：飞牛桌面用内置 WebView 加载页面，Chromium 版本可能较旧；
+  该函数不被支持时整条 `background` 声明会被判无效，主按钮直接掉成灰底。
+  提亮用 `filter: brightness()`。
 - `web/` 下新增资源**必须同步进 `web/embed.go` 的 `//go:embed` 列表**
   （显式文件名列表，漏了直接编译报错）。
 

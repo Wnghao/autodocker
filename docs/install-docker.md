@@ -6,8 +6,7 @@
 
 ## 方式一：预构建镜像（最省事）
 
-CI 在每次推 `v*` tag 时构建 **linux/amd64 + linux/arm64** 双架构镜像，
-**同时推到 Docker Hub 与 GitHub Container Registry**：
+提供 **linux/amd64 + linux/arm64** 双架构镜像，同时发布在 Docker Hub 与 GHCR：
 
 ```bash
 docker run -d --name autodocker \
@@ -22,15 +21,12 @@ docker run -d --name autodocker \
 
 启动后访问 `http://<你的机器IP>:17777`。
 
-> **默认用 Docker Hub**：国内拉取比 `ghcr.io` 快得多，也能直接吃 Docker 守护进程里
-> 已配好的加速站。拉不动时换 GHCR：`ghcr.io/haihaipypy/autodocker:latest`，两者内容完全一致。
+> 默认用 Docker Hub。拉不动时换 GHCR：`ghcr.io/haihaipypy/autodocker:latest`，内容一致。
 
-**默认零配置**：不设密码、不填飞书，起来就能用。要飞书通知或要加登录门，
-进「设置」页填即可（存数据库、即时生效）。要一开始就带密码，加一行
-`-e ADMIN_PASSWORD='你的密码'`。
+**默认不设密码、不填飞书**，起来就能用。要设密码加一行 `-e ADMIN_PASSWORD='你的密码'`；
+要通知进「设置」页填飞书凭据。
 
-> 端口默认 **17777**，刻意避开 8080 / 8000 / 9000 这些几乎必被占用的端口。
-> 换端口要两处一起改：`-p 宿主机:容器内` 的两侧，以及 `-e PORT=`。
+> 端口 **17777**。换端口要两处一起改：`-p 宿主机:容器内` 的两侧，以及 `-e PORT=`。
 
 | 标签 | 含义 |
 | --- | --- |
@@ -40,7 +36,7 @@ docker run -d --name autodocker \
 | `sha-1a2b3c4` | 对应提交，回滚排查用 |
 
 > Docker Hub 匿名拉取按 IP 限流（每 6 小时 100 次），升级频繁时可以 `docker login` 后拉。
-> 拉不动就走方式三本地构建，反正就一条 `docker compose up -d --build`。
+> 拉不动就走方式三本地构建。
 
 ## 方式二：Compose（推荐，不用源码）
 
@@ -72,10 +68,8 @@ services:
       - SELF_CONTAINER=autodocker
 ```
 
-**不用改任何东西就能起**：`docker-compose.yml` 里 `ADMIN_PASSWORD` 与三个 `FEISHU_*` 一律留空
-——不设密码即不启用登录，不填飞书只是不推通知，其余功能照常。
-装好后在网页「设置」里补齐这两项即可（存数据库、即时生效、不用重启），
-环境变量只作为**首次启动的初值**，数据库里的值优先。
+`ADMIN_PASSWORD` 与三个 `FEISHU_*` 默认留空：不设密码即不启用登录，不填飞书就不推通知。
+在网页「设置」里补齐即可，环境变量只作首次启动的初值，数据库里的值优先。
 
 首次启动会扫描一次，并自动把本机所有带 tag 的镜像纳入监控。
 访问 `http://<IP>:17777`。
@@ -123,14 +117,10 @@ docker compose up -d --build
 
 ## 关于容器本身
 
-镜像是「二进制 + ca-certificates + tzdata」三件套：前端已由 `web/embed.go` 的
-`go:embed` 编进二进制，**不需要把 `web/` 目录拷进运行阶段**。
-
-- 容器自带 `HEALTHCHECK`，探针打静态首页 `/`，刻意避开需要鉴权的 `/api/*`
-  —— 配了密码后 API 一律 401，拿它做探针会让容器永远「不健康」；
-- **刻意以 root 运行**：`docker.sock` 的属组 GID 每台机器不同（0 / 998 / 999 都见过），
-  写死一个会让部分机器直接起不来；
-- 只需要挂两处：`/var/run/docker.sock`（监控与重建的基础）与 `/data`（SQLite 数据库）。
+- 挂载两处：`/var/run/docker.sock`（必需，监控与重建靠它）与 `/data`（SQLite 数据库，
+  不挂载的话重建容器后配置会丢）。
+- 容器以 root 运行，自带 `HEALTHCHECK`。
+- 镜像里只有二进制、`ca-certificates` 与 `tzdata`，前端已编进二进制。
 
 ## 本机开发
 
