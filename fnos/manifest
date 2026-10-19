@@ -1,0 +1,19 @@
+appname               = Autodocker
+version               = 1.2.3
+display_name          = Docker 更新助手
+desc                  = 自动巡检本机 Docker 镜像，发现新版本推送到飞书，点一下卡片按钮即可完成容器重建；容器与镜像分开管理，无用镜像可一键清理。支持网页控制台、更新历史与一键回滚。
+platform              = x86
+source                = thirdparty
+maintainer            = 无辣
+maintainer_url        = https://blog.1day.vip
+distributor           = 无辣
+os_min_version        = 0.9.0
+desktop_uidir         = ui
+desktop_applaunchname = Autodocker.Main
+
+ctl_stop              = true
+service_port          = 19999
+checkport             = true
+disable_authorization_path = true
+
+changelog             = 1.2.3 除了飞牛应用包，现在也能用 Docker 直接部署：官方镜像同时提供 x86 与 ARM 双架构，compose 一行拉起，功能与飞牛版完全一致；补齐完整文档（安装、飞书配置、使用方法、技术实现、常见问题、发布流程），开源协议明确为 MIT；1.2.2 图标去掉白色底：应用图标原先是没有透明通道的白底图，放到深色桌面上四个角会露出白边，现已把白底抠成透明并做好边缘反混合，桌面图标与网页标签页图标一并换上；1.2.1 界面重做：换成深色玻璃拟态风格，卡片与列表带背景模糊、统计卡各配一色，标签页改成分段胶囊；新增深浅主题切换（顶栏与登录页右上角各有一个按钮），选择记在浏览器本地、下次打开沿用，默认深色
