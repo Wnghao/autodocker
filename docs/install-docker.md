@@ -11,16 +11,22 @@ CI 在每次推 `v*` tag 时构建 **linux/amd64 + linux/arm64** 双架构镜像
 ```bash
 docker run -d --name autodocker \
   --restart unless-stopped \
-  -p 8080:8080 \
+  -p 17777:17777 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$PWD/data:/data" \
   -e TZ=Asia/Shanghai \
   -e SELF_CONTAINER=autodocker \
-  -e ADMIN_PASSWORD='换成你的密码' \
   ghcr.io/haihaipypy/autodocker:latest
 ```
 
-启动后访问 `http://<你的机器IP>:8080`。
+启动后访问 `http://<你的机器IP>:17777`。
+
+**默认零配置**：不设密码、不填飞书，起来就能用。要飞书通知或要加登录门，
+进「设置」页填即可（存数据库、即时生效）。要一开始就带密码，加一行
+`-e ADMIN_PASSWORD='你的密码'`。
+
+> 端口默认 **17777**，刻意避开 8080 / 8000 / 9000 这些几乎必被占用的端口。
+> 换端口要两处一起改：`-p 宿主机:容器内` 的两侧，以及 `-e PORT=`。
 
 | 标签 | 含义 |
 | --- | --- |
@@ -37,12 +43,18 @@ docker run -d --name autodocker \
 ```bash
 git clone https://github.com/haihaipypy/autodocker.git
 cd autodocker
-cp docker-compose.yml docker-compose.yml.bak   # 先留个备份，方便对照
-vim docker-compose.yml                          # 填飞书凭据与网页密码
 docker compose up -d
 ```
 
+**不用改任何东西就能起**：`docker-compose.yml` 里 `ADMIN_PASSWORD` 与三个 `FEISHU_*` 一律留空
+——不设密码即不启用登录，不填飞书只是不推通知，其余功能照常。
+装好后在网页「设置」里补齐这两项即可（存数据库、即时生效、不用重启），
+环境变量只作为**首次启动的初值**，数据库里的值优先。
+
 首次启动会扫描一次，并自动把本机所有带 tag 的镜像纳入监控。
+访问 `http://<IP>:17777`。
+
+换端口改 compose 里两处：`ports:` 的 `"17777:17777"` 与 `PORT=17777`。
 
 用预构建镜像就把 `build: .` 换成 `image:` 那一行：
 
@@ -87,7 +99,7 @@ services:
 ## 本机开发
 
 ```bash
-# 后端（默认 8080；飞牛应用里由 run.sh 指定为 19999）
+# 后端（默认 17777；飞牛应用里由 run.sh 指定为 19999）
 go run ./cmd/server
 
 # 前端是纯静态文件，改完刷新浏览器即可；
@@ -99,7 +111,7 @@ STATIC_DIR=./web go run ./cmd/server
 
 ```bash
 docker build -t autodocker:dev .
-docker run --rm -p 8080:8080 \
+docker run --rm -p 17777:17777 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$PWD/data:/data" autodocker:dev
 ```

@@ -58,10 +58,12 @@
 ```bash
 git clone https://github.com/haihaipypy/autodocker.git
 cd autodocker
-cp docker-compose.yml docker-compose.yml.bak
-vim docker-compose.yml      # 填飞书凭据与网页密码
-docker compose up -d        # 访问 http://<IP>:8080
+docker compose up -d        # 访问 http://<IP>:17777
 ```
+
+**零配置可用**：默认端口 **17777**（避开 8080 这类几乎必被占用的端口），
+默认**不设访问密码、不填飞书**——起来就能在网页里看容器与镜像。
+要飞书通知或要加一道登录门，进「设置」里填即可，存数据库、即时生效、不用重启。
 
 → [Docker / Compose 部署与全部环境变量](docs/install-docker.md)
 
@@ -69,13 +71,15 @@ docker compose up -d        # 访问 http://<IP>:8080
 
 ```bash
 docker run -d --name autodocker --restart unless-stopped \
-  -p 8080:8080 \
+  -p 17777:17777 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$PWD/data:/data" \
   -e TZ=Asia/Shanghai -e SELF_CONTAINER=autodocker \
-  -e ADMIN_PASSWORD='换成你的密码' \
   ghcr.io/haihaipypy/autodocker:latest
 ```
+
+要一开始就带密码，加一行 `-e ADMIN_PASSWORD='你的密码'`（之后在网页里改也可以，数据库里的值优先）。
+换端口记得容器内 `PORT` 一起改：`-p 18000:18000 -e PORT=18000`。
 
 双架构 `linux/amd64` + `linux/arm64`。`latest` 跟着 `v*` tag 走，部署建议钉版本号
 （如 `:1.2.3`）。

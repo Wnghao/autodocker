@@ -59,7 +59,7 @@ type Config struct {
 // Load 从环境变量装载配置。
 func Load() (*Config, error) {
 	c := &Config{
-		Port:                    envInt("PORT", 8080),
+		Port:                    envInt("PORT", 17777),
 		DBPath:                  envStr("DB_PATH", "/data/autodocker.db"),
 		StaticDir:               envStr("STATIC_DIR", "./web"),
 		LogLevel:                envStr("LOG_LEVEL", "info"),

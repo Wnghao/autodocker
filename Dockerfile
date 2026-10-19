@@ -25,21 +25,21 @@ COPY --from=builder /out/autodocker /app/autodocker
 # 镜像里不需要 web 目录（STATIC_DIR 指向的目录不存在时会自动回退到内嵌资源）。
 
 ENV TZ=Asia/Shanghai \
-    PORT=8080 \
+    PORT=17777 \
     DB_PATH=/data/autodocker.db
 
 # 刻意用 root 跑：要读写 /var/run/docker.sock，而该 socket 的属组 GID
 # 每台宿主机都不一样（常见 0 / 998 / 999），写死一个 GID 会让一部分机器直接起不来。
 # 安全边界靠「端口只在内网 + 设置 ADMIN_PASSWORD」，见 README「安全须知」。
 
-EXPOSE 8080
+EXPOSE 17777
 VOLUME ["/data"]
 
 # 探针打静态首页，不打 /api/health —— 后者在配了 ADMIN_PASSWORD 时需要鉴权，
 # 一旦用户设了密码就会一直 401，容器被误判成不健康。
-# 用 ${PORT} 而不是写死 8080，否则用户改了端口健康检查必然失败。
+# 用 ${PORT} 而不是写死端口，否则用户改了端口健康检查必然失败。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD wget -q -O /dev/null "http://127.0.0.1:${PORT:-8080}/" || exit 1
+    CMD wget -q -O /dev/null "http://127.0.0.1:${PORT:-17777}/" || exit 1
 
 ENTRYPOINT ["/app/autodocker"]
 
