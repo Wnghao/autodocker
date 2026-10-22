@@ -1,38 +1,40 @@
-# Autodocker
+# AutoDocker
 
-**Docker 镜像更新监测 · 飞书确认 · 一键自动重建**
+**Docker 镜像更新监测 · 飞书 / Telegram 确认 · 一键自动重建**
 
 [![Release](https://img.shields.io/github/v/release/haihaipypy/autodocker?label=release&color=blue)](https://github.com/haihaipypy/autodocker/releases/latest)
 [![Docker Pulls](https://img.shields.io/docker/pulls/haihaipypy/autodocker)](https://hub.docker.com/r/haihaipypy/autodocker)
 [![License](https://img.shields.io/github/license/haihaipypy/autodocker)](LICENSE)
 [![Go](https://img.shields.io/github/go-mod/go-version/haihaipypy/autodocker)](go.mod)
 
-监测本机容器的镜像有没有新版本，推送到飞书。在群里点「立即更新」，服务按原配置重建容器，
+监测本机容器的镜像有没有新版本，推送到飞书或 Telegram。在聊天里点「立即更新」，服务按原配置重建容器，
 挂载、端口、网络、环境变量全部保留，失败自动回滚。没人用的镜像也能一键清理。
 
-![Autodocker](docs/images/cover.png)
+![AutoDocker](docs/images/cover.png)
 
 ---
 
 ## 它解决什么问题
 
-| 场景 | 传统做法 | Autodocker |
+| 场景 | 传统做法 | AutoDocker |
 | --- | --- | --- |
-| 想知道镜像有没有更新 | 手动 `docker pull` 比对，或装个全自动更新的又不放心 | 定时巡检，发现更新推卡片到飞书 |
-| 决定要不要更新 | 登录 NAS / SSH 上去点 | 在飞书消息里点「立即更新」 |
+| 想知道镜像有没有更新 | 手动 `docker pull` 比对，或装个全自动更新的又不放心 | 定时巡检，发现更新推送到飞书 / Telegram |
+| 决定要不要更新 | 登录 NAS / SSH 上去点 | 在聊天消息里点「立即更新」 |
 | 更新容器 | 手写 `docker run`，容易漏掉挂载或环境变量 | 按原配置重建，字段零丢失 |
 | 更新把服务搞挂了 | 手动找回原配置重新起 | 健康检查不通过自动回滚 |
 | 磁盘被旧镜像占满 | 一个个 `docker rmi`，还怕删错正在用的 | 标明使用状态，一键清理未使用的 |
 
 ## 特性
 
+- **通知渠道可选**：飞书（企业自建应用，长连接收回调）与 Telegram（bot 长轮询），
+  填好凭据的渠道都会收到提醒，可以同时用两个。设置页左栏选渠道，右栏是所选渠道的完整配置流程。
 - **容器与镜像分开管理**：容器页看「在跑的东西要不要更新」，镜像页看「磁盘上有什么、能不能清」。
 - **两种检测模式自动判定**：浮动 tag 比摘要；版本号 tag 额外巡检 tag 列表，出现更高版本时提示。
 - **按钮按状态渲染**，不摆灰按钮；检测失败的原因直接写在容器名下方。
 - **两个忽略粒度**：卡片上「忽略本版本」只放行这一次远端内容，作者推了新版本照常提醒；
   容器页「忽略」是整条监控项不再检测。
 - **深浅主题可切换**，默认深色。
-- **飞书点按钮后页面自动刷新结果**。
+- **聊天里点按钮后页面自动刷新结果**。
 
 ## 安装
 
@@ -100,14 +102,18 @@ Docker Hub 拉不动时换 GHCR：`ghcr.io/haihaipypy/autodocker:latest`，内�
 
 ![界面](docs/images/ui-dark.png)
 
-定时巡检 → 发现新版本推飞书卡片 → 点「立即更新」→ 拉镜像、按原配置重建、健康检查
+定时巡检 → 发现新版本推送到飞书 / Telegram → 点「立即更新」→ 拉镜像、按原配置重建、健康检查
 → 通过则删旧容器，不通过自动回滚。
 
 「可用」列写的是仓库里更高的版本号；没有更高版本号但同一 tag 被重新推送过，写「内容已更新」。
 
 → [完整使用说明](docs/usage.md)：两个列表的边界、忽略粒度、检测模式、清理策略
 
-## 飞书配置
+## 通知配置
+
+两个渠道任选其一，都在「设置 → 通知渠道」里配。
+
+### 飞书
 
 **必须是企业自建应用。群自定义机器人（webhook）收不到按钮点击。**
 
@@ -119,6 +125,25 @@ Docker Hub 拉不动时换 GHCR：`ghcr.io/haihaipypy/autodocker:latest`，内�
 点按钮报 `200340`，但卡片照收。
 
 → [飞书配置逐图步骤](docs/feishu.md)
+
+### Telegram
+
+五步：`@BotFather` 发 `/newbot` 拿 Token → 填进设置页**先保存一次** →
+把 bot 拉进群并 **`@它` 说句话**（或直接私聊它发一条）→ 点「读取会话」，点一下会话即填入并保存 →
+发送测试消息并**真的点一下**按钮。
+
+三个容易漏的点：Token 不保存服务就不会开始长轮询，读不到会话 ID；
+bot 默认读不到群里的普通聊天（成员列表写「无权读取消息」），得 `@它` 或关掉隐私模式；
+这个 bot 若在别处设过 webhook 就收不到长轮询结果（两者互斥）。
+
+> 国内直连 `api.telegram.org` 多半不通，「读不到会话」十有八九是这原因。
+> 设置页有 **「检测连通性」**，不通时填**代理地址**（`192.168.1.2:7890` 或 `socks5://…`）或**API 地址**（自建反代）。
+
+收到提醒时长这样，点按钮直接重建，不用回网页：
+
+![Telegram 里收到的新版本提醒](docs/images/telegram-card-update.png)
+
+→ [Telegram 配置全流程](docs/telegram.md)
 
 ## 安全
 
@@ -132,7 +157,7 @@ Docker Hub 拉不动时换 GHCR：`ghcr.io/haihaipypy/autodocker:latest`，内�
 
 - 纯 Go 单二进制，前端零构建（`go:embed`），SQLite 用 `modernc.org/sqlite`（免 CGO）。
 - 不依赖 Docker 官方 SDK，直接封装 Engine REST API，`HostConfig` 原样透传。
-- 飞书走 WebSocket 长连接收回调，免公网、免备案、免反向代理。
+- 飞书走 WebSocket 长连接收回调，Telegram 走 bot 长轮询 —— 两者都免公网、免备案、免反向代理。
 - 注册表加速三层兜底：用户设置 → 守护进程 `registry-mirrors` → 内置默认，只作用于 Docker Hub。
 
 → [技术实现与目录结构](docs/architecture.md)
@@ -152,6 +177,7 @@ MIT，见 [LICENSE](LICENSE)。
 | [install-fnos.md](docs/install-fnos.md) | 飞牛应用打包、安装、运行身份、排障 |
 | [install-docker.md](docs/install-docker.md) | Docker / Compose 部署、全部环境变量、本地开发 |
 | [feishu.md](docs/feishu.md) | 飞书自建应用配置全流程（含截图） |
+| [telegram.md](docs/telegram.md) | Telegram bot 配置全流程、收不到消息的排查 |
 | [usage.md](docs/usage.md) | 两个列表的边界、忽略粒度、检测模式、界面 |
 | [architecture.md](docs/architecture.md) | 技术选型、重建保真规则、存储坑位、测试 |
 | [faq.md](docs/faq.md) | 安全须知、已知边界、常见故障排查 |

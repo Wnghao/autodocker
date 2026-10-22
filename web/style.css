@@ -1,5 +1,5 @@
 /* =============================================================
-   Autodocker 主题样式
+   AutoDocker 主题样式
    设计语言参考 IMGZCQ/Fndesk：深色玻璃拟态 —— 深蓝底 + 光斑、
    半透明卡片 + 背景模糊、1px 高光描边、蓝/青/紫三色点缀。
    深浅两套皮肤由 :root[data-theme] 切换，主题属性在 <head> 里
@@ -240,6 +240,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .pill.idle { background: var(--muted-soft); color: var(--muted); }
 .pill.info { background: var(--info-soft); color: var(--info); }
 .pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
 
 /* ---------- 按钮 ---------- */
 
@@ -623,6 +624,103 @@ main { padding: 20px 24px 48px; }
 .field input:focus { border-color: var(--accent); box-shadow: var(--ring); }
 .field-hint { margin: 5px 0 0; font-size: 11.5px; color: var(--text-sub); line-height: 1.65; }
 
+/* 输入框旁挂一个小按钮（「读取会话」这种先查再填的操作）。
+   输入框必须 flex:1 + min-width:0，否则长串 chat_id 会把按钮挤出容器。 */
+.input-row { display: flex; gap: 8px; align-items: center; }
+.input-row input { flex: 1 1 auto; min-width: 0; }
+.input-row .btn { flex: 0 0 auto; white-space: nowrap; }
+
+/* 通知渠道选择器：已支持的能点，未支持的灰掉标「施工中」 */
+.channel-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  gap: 8px;
+  margin: 10px 0 6px;
+}
+.channel-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  text-align: left;
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color .18s ease, background .18s ease, color .18s ease;
+}
+.channel-chip .chip-name { font-size: 12.5px; font-weight: 500; }
+.channel-chip .chip-sub { font-size: 10.5px; color: var(--text-dim); }
+.channel-chip:hover { border-color: var(--border-strong); }
+.channel-chip.active { border-color: var(--accent); background: var(--accent-soft); }
+.channel-chip.active .chip-sub { color: var(--accent); }
+/* 未支持的渠道不用 disabled 属性，靠这个类即可：仍然可读，但点了没反应 */
+.channel-chip.soon { cursor: not-allowed; opacity: .55; }
+.channel-chip.soon:hover { border-color: var(--border); }
+
+/* 「读取会话」返回的候选列表 */
+.chat-pick { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.chat-pick.empty,
+.chat-pick.loading { font-size: 11.5px; color: var(--text-sub); line-height: 1.6; }
+/* 空态要放好几段说明（普通聊天 bot 收不到、两种绕过办法），
+   默认的 <p> 外边距会把这一块撑得很难看，统一压掉。 */
+.chat-pick.empty p { margin: 0; }
+.chat-pick.empty b { color: var(--text); }
+.chat-pick.empty .chat-err {
+  padding: 6px 9px;
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+/* 诊断行：轮询状态 / API 地址 / 代理，读不到会话时靠它对号入座。 */
+.chat-pick.empty .chat-diag {
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  color: var(--text-sub);
+  font-size: 10.5px;
+  word-break: break-all;
+}
+.chat-pick.empty .chat-ok {
+  padding: 6px 9px;
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-radius: 6px;
+}
+/* 检测通过但保存失败时才出现 —— 正常路径上不该看到它。 */
+.chat-pick.empty .chat-warn {
+  padding: 6px 9px;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-radius: 6px;
+  line-height: 1.6;
+}
+.chat-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  cursor: pointer;
+  transition: border-color .18s ease, color .18s ease;
+}
+.chat-item:hover { border-color: var(--accent); color: var(--accent); }
+.chat-item .chat-title { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-item .chat-id { flex: 0 0 auto; font-size: 11px; color: var(--text-dim); }
+.chat-item:hover .chat-id { color: var(--accent); }
+
 /* 设置页里的小节标题（如「飞书通知」），与上一条说明拉开距离 */
 .form-section {
   margin: 26px 0 8px;
@@ -819,9 +917,15 @@ main { padding: 20px 24px 48px; }
 
 .warn-text { color: var(--warn) !important; }
 
+/* 通知渠道的「发送测试」区：紧跟凭据输入框，填完就能试，
+   所以不用 form-actions 那套（那是给页面底部主按钮用的）。 */
+.notify-test { margin: -4px 0 22px; }
+.notify-test .field-hint { margin: 8px 0 0; }
+.notify-test .callback-state { margin-top: 10px; }
+
 .form-actions { display: flex; gap: 10px; margin-top: 22px; }
 
-/* 飞书按钮回调的等待结果条。
+/* 按钮回调的等待结果条（飞书 / Telegram 共用）。
    三种状态用底色区分，一眼就能看出「还在等 / 通了 / 没通」——
    这是纯文字做不到的，而这三种状态的处置方式完全不同。 */
 .callback-state {

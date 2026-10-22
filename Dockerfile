@@ -44,7 +44,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 ENTRYPOINT ["/app/autodocker"]
 
 # OCI 标签：GHCR 据此把镜像包自动关联到源码仓库，包页面能直接看到 README 与提交
-LABEL org.opencontainers.image.title="Autodocker" \
+LABEL org.opencontainers.image.title="AutoDocker" \
       org.opencontainers.image.description="Docker 镜像更新监测：发现新版本推送到飞书，点卡片按钮即可按原配置重建容器，失败自动回滚" \
       org.opencontainers.image.source="https://github.com/haihaipypy/autodocker" \
       org.opencontainers.image.url="https://github.com/haihaipypy/autodocker" \

@@ -112,7 +112,24 @@ const (
 	NotifNewTag NotificationKind = "new_tag"
 )
 
-// CardState 飞书卡片上承载的交互状态。
+// Channel 通知渠道。
+//
+// 同一时刻只有一个渠道是「生效渠道」：更新提醒只往那里发，按钮回调也只认它。
+// 这样做的好处是每条通知归属明确 —— 后续要改状态时知道该去改哪条消息，
+// 不必在多平台之间对账。想两个平台都收，等以后做「多渠道并存」再说。
+type Channel string
+
+const (
+	ChannelFeishu   Channel = "feishu"
+	ChannelTelegram Channel = "telegram"
+)
+
+// Valid 是否是已实现的渠道。
+func (c Channel) Valid() bool {
+	return c == ChannelFeishu || c == ChannelTelegram
+}
+
+// CardState 卡片/消息上承载的交互状态。
 type CardState string
 
 const (
@@ -127,23 +144,45 @@ const (
 
 // Notification 一条更新提醒。
 type Notification struct {
-	ID              int64            `json:"id"`
-	ImageRef        string           `json:"image_ref"`
-	ContainerID     string           `json:"container_id"`
-	ContainerName   string           `json:"container_name"`
-	Kind            NotificationKind `json:"kind"`
-	Title           string           `json:"title"`
-	Body            string           `json:"body"`
-	LocalSummary    string           `json:"local_summary"`  // 本地镜像摘要短码
-	RemoteSummary   string           `json:"remote_summary"` // 远端镜像摘要短码
-	LocalTag        string           `json:"local_tag"`      // 当前锁定的 tag
-	LatestTag       string           `json:"latest_tag"`
-	Aliases         []string         `json:"aliases"`
-	Read            bool             `json:"read"`
-	FeishuMessageID string           `json:"feishu_message_id"`
-	CardState       CardState        `json:"card_state"`
-	CreatedAt       time.Time        `json:"created_at"`
-	UpdatedAt       time.Time        `json:"updated_at"`
+	ID            int64            `json:"id"`
+	ImageRef      string           `json:"image_ref"`
+	ContainerID   string           `json:"container_id"`
+	ContainerName string           `json:"container_name"`
+	Kind          NotificationKind `json:"kind"`
+	Title         string           `json:"title"`
+	Body          string           `json:"body"`
+	LocalSummary  string           `json:"local_summary"`  // 本地镜像摘要短码
+	RemoteSummary string           `json:"remote_summary"` // 远端镜像摘要短码
+	LocalTag      string           `json:"local_tag"`      // 当前锁定的 tag
+	LatestTag     string           `json:"latest_tag"`
+	Aliases       []string         `json:"aliases"`
+	Read          bool             `json:"read"`
+	CardState     CardState        `json:"card_state"`
+
+	// 这条通知推送到了哪个渠道、投递到哪个会话、对方的消息 ID。
+	// 三者必须一起记：更新完成后要「原地改掉那条消息」，
+	// 而不同渠道的定位方式不一样（飞书认 message_id，Telegram 要 chat_id + message_id）。
+	//
+	// 这两个字段是**主投递**（第一条发成功的），只为兼容老数据与前端展示而留。
+	// 真正的全量投递记录在 Deliveries 里 —— 同时配了两个渠道时，一条提醒会各发一份。
+	Channel   Channel `json:"channel"`
+	ChatRef   string  `json:"chat_ref"`
+	MessageID string  `json:"message_id"`
+
+	Deliveries []Delivery `json:"deliveries,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
+// Delivery 一条通知在某一个渠道上的投递坐标。
+//
+// 为什么不能只留一个 channel/message_id：同时配了飞书和 Telegram 时，
+// 同一条提醒会各发一份，两边的消息 ID 互不相干。
+// 更新完成后要分别去改各自那条消息，否则另一个渠道会永远停在「待更新」。
+type Delivery struct {
+	Channel   Channel `json:"channel"`
+	ChatRef   string  `json:"chat_ref"`
+	MessageID string  `json:"message_id"`
 }
 
 // TaskStatus 更新任务状态。
@@ -198,11 +237,22 @@ type Settings struct {
 	RegistryMirror    string `json:"registry_mirror"`
 	RegistryInsecure  bool   `json:"registry_insecure"`
 
+	// 通知渠道（单选）：feishu / telegram。留空按「谁配好了就用谁」自动判定。
+	NotifyChannel string `json:"notify_channel"`
+
 	// 飞书凭据放在设置里而不是只在环境变量里：应用装好后用户直接进页面填，
 	// 不用回到安装向导；环境变量只作为首次启动的初值。
 	FeishuAppID     string `json:"feishu_app_id"`
 	FeishuAppSecret string `json:"feishu_app_secret"`
 	FeishuChatID    string `json:"feishu_chat_id"`
+
+	// Telegram：Bot Token 由 BotFather 生成，chat_id 决定消息落到哪个会话。
+	// APIBase 可以换成自建反代 —— api.telegram.org 在部分网络下直连不通。
+	// Proxy 是更省事的办法：家里 NAS 上通常已经跑着 Clash 之类，填它的 http 端口即可。
+	TelegramBotToken string `json:"telegram_bot_token"`
+	TelegramChatID   string `json:"telegram_chat_id"`
+	TelegramAPIBase  string `json:"telegram_api_base"`
+	TelegramProxy    string `json:"telegram_proxy"`
 
 	// 访问密码同样放在设置里：默认留空即不启用登录。
 	// 本应用能重建任意容器（等同于系统最高权限），只在确实需要时开。

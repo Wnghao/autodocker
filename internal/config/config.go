@@ -37,6 +37,13 @@ type Config struct {
 	FeishuEncryptKey        string
 	FeishuUseLongConn       bool
 
+	// 通知渠道与 Telegram
+	NotifyChannel    string // feishu / telegram，留空自动判定
+	TelegramBotToken string
+	TelegramChatID   string
+	TelegramAPIBase  string
+	TelegramProxy    string
+
 	// 更新策略
 	AutoUpdateEnabled bool // 检测到更新后是否无需确认直接更新
 	RequireConfirm    bool // 是否需要用户点击卡片按钮确认
@@ -75,6 +82,11 @@ func Load() (*Config, error) {
 		FeishuVerificationToken: envStr("FEISHU_VERIFICATION_TOKEN", ""),
 		FeishuEncryptKey:        envStr("FEISHU_ENCRYPT_KEY", ""),
 		FeishuUseLongConn:       envBool("FEISHU_USE_LONG_CONN", true),
+		NotifyChannel:           envStr("NOTIFY_CHANNEL", ""),
+		TelegramBotToken:        envStr("TELEGRAM_BOT_TOKEN", ""),
+		TelegramChatID:          envStr("TELEGRAM_CHAT_ID", ""),
+		TelegramAPIBase:         envStr("TELEGRAM_API_BASE", ""),
+		TelegramProxy:           envStr("TELEGRAM_PROXY", ""),
 		AutoUpdateEnabled:       envBool("AUTO_UPDATE", false),
 		RequireConfirm:          envBool("REQUIRE_CONFIRM", true),
 		UpdateTimeout:           time.Duration(envInt("UPDATE_TIMEOUT", 300)) * time.Second,

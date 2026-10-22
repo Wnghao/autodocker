@@ -10,30 +10,40 @@ import (
 )
 
 const notifCols = `id, image_ref, container_id, container_name, kind, title, body,
-	local_summary, remote_summary, local_tag, latest_tag, aliases, read, feishu_message_id, card_state,
+	local_summary, remote_summary, local_tag, latest_tag, aliases, read,
+	channel, chat_ref, message_id, card_state, deliveries,
 	created_at, updated_at`
 
 func scanNotification(sc rowScanner) (model.Notification, error) {
 	var (
-		n           model.Notification
-		aliasesJSON string
-		read        int
-		createdAt   int64
-		updatedAt   int64
+		n              model.Notification
+		aliasesJSON    string
+		deliveriesJSON string
+		read           int
+		channel        string
+		createdAt      int64
+		updatedAt      int64
 	)
 	err := sc.Scan(
 		&n.ID, &n.ImageRef, &n.ContainerID, &n.ContainerName, &n.Kind, &n.Title, &n.Body,
 		&n.LocalSummary, &n.RemoteSummary, &n.LocalTag, &n.LatestTag, &aliasesJSON, &read,
-		&n.FeishuMessageID, &n.CardState, &createdAt, &updatedAt,
+		&channel, &n.ChatRef, &n.MessageID, &n.CardState, &deliveriesJSON, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return n, err
+	}
+	n.Channel = model.Channel(channel)
+	if n.Channel == "" {
+		n.Channel = model.ChannelFeishu
 	}
 	n.Read = read != 0
 	n.CreatedAt = tsToTime(createdAt)
 	n.UpdatedAt = tsToTime(updatedAt)
 	if aliasesJSON != "" {
 		_ = json.Unmarshal([]byte(aliasesJSON), &n.Aliases)
+	}
+	if deliveriesJSON != "" {
+		_ = json.Unmarshal([]byte(deliveriesJSON), &n.Deliveries)
 	}
 	return n, nil
 }
@@ -51,17 +61,22 @@ func (s *Store) CreateNotification(n *model.Notification) (int64, error) {
 	if err != nil {
 		aliases = []byte("[]")
 	}
+	deliveries, derr := json.Marshal(n.Deliveries)
+	if derr != nil || len(n.Deliveries) == 0 {
+		deliveries = []byte("[]")
+	}
 	var id int64
 	err = s.db.QueryRow(`
 		INSERT INTO notifications(
 			image_ref, container_id, container_name, kind, title, body,
 			local_summary, remote_summary, local_tag, latest_tag, aliases, read,
-			feishu_message_id, card_state, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			channel, chat_ref, message_id, card_state, deliveries, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		RETURNING id`,
 		n.ImageRef, n.ContainerID, n.ContainerName, string(n.Kind), n.Title, n.Body,
 		n.LocalSummary, n.RemoteSummary, n.LocalTag, n.LatestTag, string(aliases), b2i(n.Read),
-		n.FeishuMessageID, string(n.CardState), timeToTs(n.CreatedAt), timeToTs(now),
+		string(n.Channel), n.ChatRef, n.MessageID, string(n.CardState), string(deliveries),
+		timeToTs(n.CreatedAt), timeToTs(now),
 	).Scan(&id)
 	if err != nil {
 		return 0, err
@@ -153,10 +168,47 @@ func (s *Store) MarkAllRead() error {
 	return err
 }
 
-// SetNotificationCard 更新卡片消息 ID 与交互状态。
-func (s *Store) SetNotificationCard(id int64, messageID string, state model.CardState) error {
-	_, err := s.db.Exec(`UPDATE notifications SET feishu_message_id = ?, card_state = ?, updated_at = ? WHERE id = ?`,
-		messageID, string(state), timeToTs(time.Now()), id)
+// SetNotificationDeliveries 写入全部投递记录，并把第一条当作主投递。
+//
+// 主投递（channel/chat_ref/message_id）留着是给前端展示和兼容老数据用的；
+// 全量列表才是「更新完成后要去改哪几条消息」的真实依据 ——
+// 少记一条，那个渠道的卡片就会永远停在「待更新」。
+func (s *Store) SetNotificationDeliveries(id int64, list []model.Delivery, state model.CardState) error {
+	if len(list) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(list)
+	if err != nil {
+		return err
+	}
+	first := list[0]
+	_, err = s.db.Exec(
+		`UPDATE notifications SET deliveries = ?, channel = ?, chat_ref = ?, message_id = ?,
+		 card_state = ?, updated_at = ? WHERE id = ?`,
+		string(raw), string(first.Channel), first.ChatRef, first.MessageID,
+		string(state), timeToTs(time.Now()), id,
+	)
+	return err
+}
+
+// UpdateNotificationDeliveries 只改投递列表（用于 Telegram 点按钮时纠正会话 ID）。
+func (s *Store) UpdateNotificationDeliveries(id int64, list []model.Delivery) error {
+	raw, err := json.Marshal(list)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE notifications SET deliveries = ?, updated_at = ? WHERE id = ?`,
+		string(raw), timeToTs(time.Now()), id)
+	return err
+}
+
+// SetNotificationChatRef 补记会话 ID。
+// Telegram 的消息 ID 只在「会话 + 消息」这对坐标里有意义：
+// 通知是按默认会话发出去的，但用户可能在另一个群里点按钮，
+// 之后改写消息必须用他点击时所在的那个会话。
+func (s *Store) SetNotificationChatRef(id int64, chatRef string) error {
+	_, err := s.db.Exec(`UPDATE notifications SET chat_ref = ?, updated_at = ? WHERE id = ?`,
+		chatRef, timeToTs(time.Now()), id)
 	return err
 }
 

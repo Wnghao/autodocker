@@ -52,6 +52,14 @@ type Server struct {
 	authMu   sync.RWMutex
 	authUser string
 	authPass string
+
+	// 首页「未使用镜像」那格要问 Docker 才知道，而 stats 是 5 秒一轮的轮询，
+	// 用一层短缓存兜住，别每轮都去翻一遍镜像与容器列表。
+	// unusedOK = 上次是否真的读到过：读不到时前端显示「—」，不显示假的 0。
+	unusedMu    sync.Mutex
+	unusedCount int
+	unusedOK    bool
+	unusedAt    time.Time
 }
 
 // New 构造 HTTP 服务。
@@ -128,6 +136,12 @@ func (s *Server) Handler() http.Handler {
 	// 飞书链路状态：长连接是否就绪、服务启动以来收没收到过按钮回调
 	mux.HandleFunc("GET /api/feishu/status", s.handleFeishuStatus)
 
+	mux.HandleFunc("POST /api/telegram/test", s.handleTelegramTest)
+	// 只验网络与 Token：不要求 chat_id，用来区分「连不上」和「没配会话」
+	mux.HandleFunc("POST /api/telegram/check", s.handleTelegramCheck)
+	// Telegram 链路状态：长轮询是否在跑、最近在哪些会话里收到过消息
+	mux.HandleFunc("GET /api/telegram/status", s.handleTelegramStatus)
+
 	// 注册表连通性诊断：列表里出现「未知」时用来定位到底是哪一环不通
 	mux.HandleFunc("POST /api/registry/test", s.handleRegistryTest)
 
@@ -193,7 +207,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		if !ok ||
 			subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 ||
 			subtle.ConstantTimeCompare([]byte(p), []byte(pass)) != 1 {
-			w.Header().Set("WWW-Authenticate", `Basic realm="Autodocker"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="AutoDocker"`)
 			writeErr(w, http.StatusUnauthorized, "需要登录")
 			return
 		}

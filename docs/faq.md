@@ -51,7 +51,9 @@
    http，局域网 IP 需要临时开 `REGISTRY_INSECURE`，但那样**所有**源都会改走 http，
    用完记得关。
 
-## 卡片收得到，点按钮没反应
+## 消息收得到，点按钮没反应
+
+### 飞书
 
 两条独立链路：发消息走 `im/v1/messages`，按钮点击走长连接回调。
 按顺序检查：
@@ -64,6 +66,22 @@
    90 秒内没反应，设置页会提示该查哪两处。
 
 详见 [飞书配置](feishu.md)。
+
+### Telegram
+
+发消息走 `sendMessage`，按钮点击走长轮询回来的 `callback_query`，也是两条独立链路。
+按顺序检查：
+
+1. Token 是否带全（`数字:字母`，冒号前后都不能少、不能多空格）；
+2. 群里说普通聊天 bot 读不到（成员列表写「无权读取消息」），先 `@它` 说一句，
+   或 `@BotFather` → `/setprivacy` → `Disable` 后把 bot 移出群重进；
+3. 这个 bot 是否在别处设过 webhook —— **webhook 与长轮询互斥**，
+   打开 `https://api.telegram.org/bot<TOKEN>/getWebhookInfo` 看 `url` 是否为空，
+   非空就先 `deleteWebhook`；
+4. 这台机器能不能访问 `api.telegram.org`，不通就在设置页填自建的 API 反代地址；
+5. 设置页「发送测试消息」→ 点消息里的按钮 → 看是否出现「✅ 已收到按钮回调」。
+
+详见 [Telegram 配置](telegram.md)。
 
 ## 换飞书应用后报错和配置毫不相干
 

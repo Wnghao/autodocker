@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/haihaipypy/autodocker/internal/dockerx"
 	"github.com/haihaipypy/autodocker/internal/model"
+	"github.com/haihaipypy/autodocker/internal/notify/telegram"
 	"github.com/haihaipypy/autodocker/internal/registry"
 	"github.com/haihaipypy/autodocker/internal/scanner"
 	"github.com/haihaipypy/autodocker/internal/store"
@@ -54,11 +56,17 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	for _, n := range byStatus {
 		total += n
 	}
+	// 读不到 Docker 时给 null，前端显示「—」，不给假的 0
+	var unusedImages any
+	if n, ok := s.unusedImageCount(r.Context()); ok {
+		unusedImages = n
+	}
 	writeOK(w, map[string]any{
 		"total":             total,
 		"up_to_date":        byStatus[string(model.StatusUpToDate)],
 		"update_available":  byStatus[string(model.StatusUpdatePending)],
 		"new_version_tag":   byStatus[string(model.StatusNewTag)],
+		"unused_images":     unusedImages,
 		"unknown":           byStatus[string(model.StatusUnknown)],
 		"ignored":           byStatus[string(model.StatusIgnored)],
 		"unread":            unread,
@@ -67,8 +75,72 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"updating":          s.up.Busy(),
 		"feishu_configured": s.nt.Feishu().Configured(),
 		"feishu_longconn":   s.nt.LongConnRunning(),
-		"auth_enabled":      s.AuthEnabled(),
+		"telegram_polling":  s.nt.TelegramPolling(),
+		"notify_channel":    string(s.nt.EffectiveChannel()),
+		// notify_ready = 当前渠道「连 chat_id 都填了」。前端不必自己复刻一遍
+		// 各渠道的必填项 —— 「配没配好」与「推不推得出去」是两件事。
+		"notify_ready": s.nt.NotifyReady(),
+		// 两个渠道可能同时配好，顶栏要说清「哪些已连接、哪些连不上」，所以给列表。
+		"notify_channels": s.nt.ChannelStatuses(),
+		"auth_enabled":    s.AuthEnabled(),
 	})
+}
+
+// unusedImageCount 数出「磁盘上没人用」的镜像有几个。
+//
+// 口径与镜像页的「未使用」一致：按镜像 ID 去重（一个镜像挂多个 tag 只算一个），
+// 悬空层也算在内 —— 从「能不能清掉省空间」的角度看，它跟没容器引用的镜像是一回事。
+// 只认 Docker 里真实存在的镜像，库里那些纯远端盯梢项不算。
+//
+// 首页每 5 秒回查一次 stats，而这个数要问 Docker（翻镜像列表 + 容器列表），
+// 所以加一层 15 秒的短缓存。读不到 Docker 时返回 false，前端显示「—」——
+// 报一个假的 0（「没有可清理的」）比不显示更容易误导人。
+func (s *Server) unusedImageCount(ctx context.Context) (int, bool) {
+	s.unusedMu.Lock()
+	defer s.unusedMu.Unlock()
+
+	if !s.unusedAt.IsZero() && time.Since(s.unusedAt) < 15*time.Second {
+		return s.unusedCount, s.unusedOK
+	}
+	// 失败也要记时间：Docker 长期读不到时，否则每 5 秒就重试一次、刷满日志。
+	s.unusedAt = time.Now()
+
+	containers, err := s.dk.ListContainers(ctx)
+	if err != nil {
+		s.log.Warn("统计未使用镜像时列举容器失败", "err", err)
+		s.unusedOK = false
+		return s.unusedCount, false
+	}
+	inUse := map[string]bool{}
+	for _, c := range containers {
+		if c.ImageID != "" {
+			inUse[c.ImageID] = true
+		}
+	}
+	images, err := s.dk.ListImages(ctx)
+	if err != nil {
+		s.log.Warn("统计未使用镜像时列举镜像失败", "err", err)
+		s.unusedOK = false
+		return s.unusedCount, false
+	}
+	s.unusedCount, s.unusedOK = countUnusedImages(images, inUse), true
+	return s.unusedCount, s.unusedOK
+}
+
+// countUnusedImages 纯计数，口径见 unusedImageCount。
+// 一个镜像挂多个 tag 也只算一个；只要还有任何容器（含已停止）引用它的 ID
+// 就算「在用」—— 这种镜像 `docker rmi` 本来也删不掉。
+func countUnusedImages(images []dockerx.Image, usedIDs map[string]bool) int {
+	counted := map[string]bool{}
+	n := 0
+	for _, img := range images {
+		if img.ID == "" || usedIDs[img.ID] || counted[img.ID] {
+			continue
+		}
+		counted[img.ID] = true
+		n++
+	}
+	return n
 }
 
 // handleListContainers 容器列表：一条记录对应一个容器。
@@ -725,12 +797,107 @@ func (s *Server) handleFeishuTest(w http.ResponseWriter, r *http.Request) {
 // 这里把「最近一次按钮回调的时间」暴露给设置页，让验证从「去群里看看」变成
 // 一个有确定结论的等待过程。
 func (s *Server) handleFeishuStatus(w http.ResponseWriter, r *http.Request) {
-	at, action, count := s.nt.CallbackState()
+	at, action, lastCh, count := s.nt.CallbackState()
 	resp := map[string]any{
 		"configured":     s.nt.Feishu().Configured(),
 		"long_conn":      s.nt.LongConnRunning(),
 		"callback_count": count,
 		"last_action":    action,
+		// 回调计数是全局的（两个渠道共用一个计数器），设置页靠 last_channel
+		// 判断「刚到的这次回调是不是本渠道的」，否则在飞书里点了按钮
+		// 会把 Telegram 的等待判成成功。
+		"last_channel": string(lastCh),
+		"channel":      string(s.nt.EffectiveChannel()),
+	}
+	if !at.IsZero() {
+		resp["last_callback_at"] = at.Format(time.RFC3339)
+	}
+	writeOK(w, resp)
+}
+
+func (s *Server) handleTelegramTest(w http.ResponseWriter, r *http.Request) {
+	if err := s.nt.SendTestTelegram(r.Context()); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeOK(w, map[string]any{"result": "sent"})
+}
+
+// handleTelegramCheck 只验「连不连得上 + Token 对不对」，不要求 chat_id。
+//
+// 用户最常见的卡点是压根连不上 api.telegram.org，而「发送测试消息」必须先有
+// chat_id，于是报的是「尚未配置接收会话」—— 真正的网络问题被挡在后面，
+// 人就在「读不到会话」和「没配会话」之间打转。这个接口只跑 getMe，
+// 一次把网络、代理、Token 三件事说清楚。
+//
+// 请求体可以带 token / api_base / proxy 覆盖已保存的值：刚填完代理还没保存时
+// 也能先试通，省掉「保存 → 回来看 → 再改」的来回。
+func (s *Server) handleTelegramCheck(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Token   string `json:"telegram_bot_token"`
+		APIBase string `json:"telegram_api_base"`
+		Proxy   string `json:"telegram_proxy"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&in)
+
+	cfg := telegram.Config{
+		Token:   firstNonEmpty(in.Token, s.nt.Telegram().Token()),
+		APIBase: firstNonEmpty(in.APIBase, s.nt.Telegram().APIBase()),
+		Proxy:   firstNonEmpty(in.Proxy, s.nt.Telegram().Proxy()),
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+
+	name, err := telegram.New(cfg).GetMe(ctx)
+	if err != nil {
+		writeOK(w, map[string]any{
+			"ok":      false,
+			"error":   err.Error(),
+			"apiBase": cfg.APIBase,
+			"proxy":   cfg.Proxy,
+		})
+		return
+	}
+	writeOK(w, map[string]any{
+		"ok":       true,
+		"username": name,
+		"apiBase":  cfg.APIBase,
+		"proxy":    cfg.Proxy,
+	})
+}
+
+// firstNonEmpty 取第一个非空值。空串在这里的含义是「没覆盖」，
+// 不能拿它去盖掉已保存的配置 —— 那样用户留空的字段会被当成显式的空。
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// handleTelegramStatus 汇报 Telegram 链路状态。
+//
+// chats 是「这个 bot 最近在哪些会话里收到过消息」。Telegram 的 chat_id
+// 只能靠 bot 收到一条消息才知道，让用户自己去翻 getUpdates 的 JSON 太劝退，
+// 直接把候选列出来点一下就能填。
+func (s *Server) handleTelegramStatus(w http.ResponseWriter, r *http.Request) {
+	at, action, ch, count := s.nt.CallbackState()
+	resp := map[string]any{
+		"configured": s.nt.Telegram().Configured(),
+		"polling":    s.nt.TelegramPolling(),
+		"chat_id":    s.nt.Telegram().DefaultChatID(),
+		"chats":      s.nt.TelegramChats(),
+		"last_error": s.nt.TelegramLastError(),
+		// api_base / proxy 一起返回：「读不到会话」时用户看不出服务到底在拿哪个
+		// 地址、走不走代理，把这两项摊开就能一眼判断是不是网络路径的问题。
+		"api_base":       s.nt.Telegram().APIBase(),
+		"proxy":          s.nt.Telegram().Proxy(),
+		"callback_count": count,
+		"last_action":    action,
+		"last_channel":   string(ch),
+		"channel":        string(s.nt.EffectiveChannel()),
 	}
 	if !at.IsZero() {
 		resp["last_callback_at"] = at.Format(time.RFC3339)
@@ -815,9 +982,14 @@ func (s *Server) LoadSettings() model.Settings {
 		HealthCheckWait:   int(s.cfg.HealthCheckWait / time.Second),
 		RegistryMirror:    s.cfg.RegistryMirror,
 		RegistryInsecure:  s.cfg.RegistryInsecure,
+		NotifyChannel:     s.cfg.NotifyChannel,
 		FeishuAppID:       s.cfg.FeishuAppID,
 		FeishuAppSecret:   s.cfg.FeishuAppSecret,
 		FeishuChatID:      s.cfg.FeishuChatID,
+		TelegramBotToken:  s.cfg.TelegramBotToken,
+		TelegramChatID:    s.cfg.TelegramChatID,
+		TelegramAPIBase:   s.cfg.TelegramAPIBase,
+		TelegramProxy:     s.cfg.TelegramProxy,
 		AdminUser:         authUser,
 		AdminPassword:     authPass,
 	}
@@ -871,5 +1043,12 @@ func (s *Server) ApplySettings(in model.Settings) {
 	}
 	// 访问密码可以在页面里改：留空即关闭登录，保存后下一个请求就按新凭据校验。
 	s.setAuth(in.AdminUser, in.AdminPassword)
+	s.nt.ApplyChannel(in.NotifyChannel)
 	s.nt.ApplyFeishu(in.FeishuAppID, in.FeishuAppSecret, in.FeishuChatID)
+	s.nt.ApplyTelegram(telegram.Config{
+		Token:   in.TelegramBotToken,
+		ChatID:  in.TelegramChatID,
+		APIBase: in.TelegramAPIBase,
+		Proxy:   in.TelegramProxy,
+	})
 }

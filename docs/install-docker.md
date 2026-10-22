@@ -23,8 +23,8 @@ docker run -d --name autodocker \
 
 > 默认用 Docker Hub。拉不动时换 GHCR：`ghcr.io/haihaipypy/autodocker:latest`，内容一致。
 
-**默认不设密码、不填飞书**，起来就能用。要设密码加一行 `-e ADMIN_PASSWORD='你的密码'`；
-要通知进「设置」页填飞书凭据。
+**默认不设密码、不填通知凭据**，起来就能用。要设密码加一行 `-e ADMIN_PASSWORD='你的密码'`；
+要通知进「设置」页选渠道、填凭据（[飞书](feishu.md) / [Telegram](telegram.md)）。
 
 > 端口 **17777**。换端口要两处一起改：`-p 宿主机:容器内` 的两侧，以及 `-e PORT=`。
 
@@ -68,8 +68,8 @@ services:
       - SELF_CONTAINER=autodocker
 ```
 
-`ADMIN_PASSWORD` 与三个 `FEISHU_*` 默认留空：不设密码即不启用登录，不填飞书就不推通知。
-在网页「设置」里补齐即可，环境变量只作首次启动的初值，数据库里的值优先。
+`ADMIN_PASSWORD` 与全部通知凭据（`FEISHU_*` / `TELEGRAM_*`）默认留空：不设密码即不启用登录，
+不填凭据就不推通知。在网页「设置」里补齐即可，环境变量只作首次启动的初值，数据库里的值优先。
 
 首次启动会扫描一次，并自动把本机所有带 tag 的镜像纳入监控。
 访问 `http://<IP>:17777`。
@@ -103,8 +103,13 @@ docker compose up -d --build
 | `ADMIN_USER` | 登录用户名，默认 `admin` |
 | `SELF_CONTAINER` | 自己的容器名，用于阻止「更新自己」。默认 `autodocker`，改了容器名要同步改这里 |
 | `SCAN_INTERVAL` | 巡检间隔秒数，最小 30，`0` 表示只在手动点击时扫描 |
+| `NOTIFY_CHANNEL` | 用哪个通知渠道：`feishu` 或 `telegram`。同上，作为首次启动的初值，之后在网页里选 |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 飞书自建应用凭据。作为**首次启动的初值**，之后在网页「设置」里维护，数据库里的值优先 |
 | `FEISHU_CHAT_ID` | 接收通知的群 ID，同上 |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot 凭据（`@BotFather` 给的 `数字:字母` 串），同上 |
+| `TELEGRAM_CHAT_ID` | 接收消息的会话 ID。群与频道为负数；也可在设置页点「读取会话」自动填 |
+| `TELEGRAM_API_BASE` | Telegram API 地址，留空用 `https://api.telegram.org`。直连不通时填自建反代 |
+| `TELEGRAM_PROXY` | HTTP 代理，形如 `http://192.168.1.2:7890`。走代理上外网时填，留空直连 |
 | `AUTO_UPDATE` | 发现即自动更新（无人值守）。默认关闭，即「发现 → 通知 → 等人确认」 |
 | `WATCH` | 额外监控本机没有运行的镜像，逗号分隔，例如 `nginx:1.25,redis:7.2` |
 | `ROLLBACK_ON_FAILURE` | 更新失败是否自动回滚，默认 `true` |

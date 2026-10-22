@@ -173,7 +173,7 @@ func run() error {
 		_ = httpSrv.Shutdown(shutdownCtx)
 	}()
 
-	logger.Info("Autodocker 已启动",
+	logger.Info("AutoDocker 已启动",
 		"port", cfg.Port,
 		"scan_interval", cfg.ScanInterval.String(),
 		"feishu_ready", fs.Configured(),

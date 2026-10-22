@@ -258,12 +258,16 @@ function badge(map, key) {
 // 首页这排数字说的是**容器**，不是镜像。
 // 镜像页讲「磁盘上有什么、能不能清」，容器页讲「在跑的东西该不该更新」，
 // 顶部这条跟着「该不该更新」走。标签也写明白，免得看的人以为数错了。
+// 「未使用镜像」是唯一一格讲磁盘的：它对应镜像页那批可以清理的行，
+// 单独放在这里是因为「有更新」与「可选更新」说的都是同一件事（有新版），
+// 并排放着看的人会以为数重了。
 function renderStats() {
   const s = state.stats || {};
   const items = [
     { label: '监控容器', value: s.total || 0, cls: '' },
     { label: '有更新', value: s.update_available || 0, cls: 'warn' },
-    { label: '可选更新', value: s.new_version_tag || 0, cls: 'info' },
+    // 后端读不到 Docker 时给 null —— 显示「—」，别拿 0 假装「没有可清理的」
+    { label: '未使用镜像', value: s.unused_images == null ? '—' : s.unused_images, cls: 'info' },
     { label: '未读通知', value: s.unread || 0, cls: 'accent' },
     { label: '已是最新', value: s.up_to_date || 0, cls: 'ok' },
   ];
@@ -275,18 +279,35 @@ function renderStats() {
   `).join('');
 
   const statusEl = $('#global-status');
+  statusEl.title = '';
   if (s.updating) {
     statusEl.textContent = '更新执行中';
     statusEl.className = 'pill info';
   } else if (s.scanning) {
     statusEl.textContent = '扫描中';
     statusEl.className = 'pill info';
-  } else if (!s.feishu_configured) {
-    statusEl.textContent = '飞书未配置';
-    statusEl.className = 'pill warn';
   } else {
-    statusEl.textContent = '空闲';
-    statusEl.className = 'pill idle';
+    // 两个渠道可能同时配好了，胶囊只写「已连接」，具体是哪几个挂 title 上。
+    // 写死渠道名（「飞书 已连接」）在同时配了 Telegram 时是错的。
+    const chans = (s.notify_channels || []).filter((c) => c.configured);
+    // 离线的那条把原因一起挂上：双渠道只有一个坏掉时，光看「未连接」
+    // 还得再进设置页才知道为什么，悬停一次能答完就别让人多点两次。
+    const lines = chans.map((c) => c.name + '：' + (c.online ? '已连接' : '未连接' + (c.error ? '（' + shortErr(c.error, 60) + '）' : '')));
+
+    if (!chans.length) {
+      statusEl.textContent = '通知渠道未配置';
+      statusEl.className = 'pill warn';
+    } else if (chans.some((c) => c.online)) {
+      statusEl.textContent = '已连接';
+      statusEl.className = 'pill ok';
+      statusEl.title = lines.join('\n');
+    } else {
+      statusEl.textContent = '未连接';
+      statusEl.className = 'pill warn';
+      // 完整原因挂在 title 上，鼠标停一下就能看到，不用翻设置页。
+      statusEl.title = chans.filter((c) => c.error)
+        .map((c) => c.name + '：' + c.error).join('\n') || '凭据已填，但链路还没连上';
+    }
   }
 }
 
@@ -536,80 +557,79 @@ function renderNotifications() {
   `).join('');
 }
 
-function renderSettings() {
+// 通知渠道清单。
+//
+// ready=false 的只在页面上列出来、不能选：用户明确要求把后续要做的渠道摆出来，
+// 写「施工中」比什么都不说清楚得多。加新渠道时改这里 + 后端 Channel 枚举即可。
+const CHANNELS = [
+  { id: 'feishu', name: '飞书', ready: true },
+  { id: 'telegram', name: 'Telegram', ready: true },
+  { id: 'dingtalk', name: '钉钉', ready: false },
+  { id: 'wecom', name: '企业微信', ready: false },
+  { id: 'slack', name: 'Slack', ready: false },
+  { id: 'discord', name: 'Discord', ready: false },
+  { id: 'gotify', name: 'Gotify', ready: false },
+  { id: 'ntfy', name: 'ntfy', ready: false },
+  { id: 'bark', name: 'Bark', ready: false },
+  { id: 'smtp', name: '邮件', ready: false },
+];
+
+// currentChannel 当前应该显示哪个渠道的设置。
+//
+// 未指定时按「谁配好了用谁」推断，与后端 EffectiveChannel 的判断保持一致；
+// 都没配就默认显示飞书（它是第一个做的，也是文档里最先讲的）。
+function currentChannel() {
+  const s = state.settings || {};
+  const ch = s.notify_channel;
+  if (ch === 'telegram' || ch === 'feishu') return ch;
+  if (!s.feishu_app_id && s.telegram_bot_token) return 'telegram';
+  return 'feishu';
+}
+
+function channelConfigured(id) {
+  const s = state.settings || {};
+  if (id === 'feishu') return !!(s.feishu_app_id && s.feishu_app_secret);
+  if (id === 'telegram') return !!s.telegram_bot_token;
+  return false;
+}
+
+// stashChannelFields 把当前可见渠道的输入暂存进 state.settings。
+//
+// 切换渠道会整块重绘表单，浏览器不会替你记住刚输入的内容；
+// 先存一份，切回来时值还在，也保证保存时不会塞进一空串把别的渠道凭据抹掉。
+function stashChannelFields() {
   const s = state.settings;
   if (!s) return;
-  const configured = !!(s.feishu_app_id && s.feishu_app_secret);
-  const live = state.stats && state.stats.feishu_longconn;
-  const statusText = !configured
-    ? '未配置，发现新版本只会记录在「通知」标签里'
-    : (live ? '已配置，按钮回调长连接正常' : '已配置，但长连接尚未就绪（保存后稍等片刻，或查看日志）');
-  $('#settings-form').innerHTML = `
-    <div class="field">
-      <label for="scan_interval">扫描间隔（秒，0 表示关闭定时扫描）</label>
-      <input id="scan_interval" name="scan_interval" type="number" min="0" value="${s.scan_interval}">
-      <p class="field-hint">最小 30 秒。修改后无需重启即可生效。</p>
-    </div>
-    <div class="field">
-      <label for="health_check_wait">更新后健康检查观察窗口（秒）</label>
-      <input id="health_check_wait" name="health_check_wait" type="number" min="0" max="600" value="${s.health_check_wait}">
-      <p class="field-hint">新容器启动后最多等待这么久，未通过则按下方策略处理。</p>
-    </div>
+  const take = (id, key) => {
+    const el = $('#' + id);
+    if (el) s[key] = el.value.trim();
+  };
+  take('feishu_app_id', 'feishu_app_id');
+  take('feishu_app_secret', 'feishu_app_secret');
+  take('feishu_chat_id', 'feishu_chat_id');
+  take('telegram_bot_token', 'telegram_bot_token');
+  take('telegram_chat_id', 'telegram_chat_id');
+  take('telegram_api_base', 'telegram_api_base');
+  take('telegram_proxy', 'telegram_proxy');
+}
 
-    <h3 class="form-section">飞书通知</h3>
-    <p class="field-hint">
-      右侧一栏列了完整的配置步骤，第一次配置照着走一遍即可；
-      三个值一并留空，即完全关闭飞书通知。
-    </p>
+function channelChipsHtml(ch) {
+  return CHANNELS.map((c) => {
+    if (!c.ready) {
+      return `<span class="channel-chip soon" aria-disabled="true">
+        <span class="chip-name">${esc(c.name)}</span>
+        <span class="chip-sub">施工中</span></span>`;
+    }
+    const active = c.id === ch ? ' active' : '';
+    const sub = channelConfigured(c.id) ? '已填写凭据' : '待配置';
+    return `<button type="button" class="channel-chip${active}" data-channel="${c.id}">
+      <span class="chip-name">${esc(c.name)}</span>
+      <span class="chip-sub">${sub}</span></button>`;
+  }).join('');
+}
 
-    <details class="setup-guide" open>
-      <summary>配置步骤（第一次配置照着做，共 8 步）</summary>
-      <ol class="setup-steps">
-        <li>
-          <b>建应用</b>：打开
-          <a href="https://open.feishu.cn/app" target="_blank" rel="noreferrer">飞书开放平台 · 开发者后台</a>，
-          点「创建企业自建应用」，名字随意。
-        </li>
-        <li>
-          <b>加机器人能力</b>：左侧「应用能力 → 机器人」→ 添加应用能力，
-          确认「消息卡片」开关是打开的。
-        </li>
-        <li>
-          <b>取凭据</b>：左侧「凭证与基础信息」，把 <code>App ID</code> 和
-          <code>App Secret</code> 填到左边的设置项里。
-        </li>
-        <li>
-          <b>开权限</b>：左侧「开发配置 → 权限管理 → API 权限」，搜到下面两项并开通，
-          权限类型都选<b>「应用身份」</b>：
-          <ul class="scope-list">
-            <li><code>im:message:send_as_bot</code></li>
-            <li><code>im:chat:readonly</code></li>
-          </ul>
-        </li>
-        <li>
-          <b>配回调</b>：左侧「开发配置 → 事件与回调」→ 切到<b>「回调配置」标签页</b>：
-          <ul class="scope-list">
-            <li>「订阅方式」选<b>「使用长连接接收回调」</b>，点保存</li>
-            <li>「已订阅的回调」→ 添加回调 → 搜<b>「卡片回传交互」</b>
-              （<code>card.action.trigger</code>）→ 确认添加</li>
-          </ul>
-        </li>
-        <li>
-          <b>发布版本</b>：左侧「应用发布 → 版本管理与发布」→ 创建版本 → 提交发布。
-        </li>
-        <li>
-          <b>把机器人拉进群</b>：飞书里打开目标群 → 右上角设置 → 群机器人 → 添加机器人，
-          选中你刚建的这个应用。
-        </li>
-        <li>
-          <b>取群 ID</b>：打开
-          <a href="https://open.feishu.cn/api-explorer" target="_blank" rel="noreferrer">飞书 API 调试台</a>，
-          搜「获取机器人所在的群列表」，以<b>应用身份</b>调用，
-          返回里的 <code>chat_id</code> 填到左边的设置项里。
-        </li>
-      </ol>
-    </details>
-
+function feishuFieldsHtml(s) {
+  return `
     <div class="field">
       <label for="feishu_app_id">App ID</label>
       <input id="feishu_app_id" name="feishu_app_id" type="text" value="${esc(s.feishu_app_id)}" placeholder="cli_xxxxxxxxxxxx">
@@ -622,7 +642,216 @@ function renderSettings() {
     <div class="field">
       <label for="feishu_chat_id">接收群 chat_id</label>
       <input id="feishu_chat_id" name="feishu_chat_id" type="text" value="${esc(s.feishu_chat_id)}" placeholder="oc_xxxxxxxx">
-      <p class="field-hint">上面三个值一并留空，即完全关闭飞书通知。</p>
+      <p class="field-hint">三个值一并留空，即完全关闭飞书通知。</p>
+    </div>`;
+}
+
+function telegramFieldsHtml(s) {
+  return `
+    <div class="field">
+      <label for="telegram_bot_token">Bot Token</label>
+      <input id="telegram_bot_token" name="telegram_bot_token" type="password"
+             value="${esc(s.telegram_bot_token)}" placeholder="123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
+      <p class="field-hint">找 <code>@BotFather</code> 发 <code>/newbot</code> 拿到。仅保存在本机数据库里。</p>
+    </div>
+    <div class="field">
+      <label for="telegram_chat_id">接收会话 chat_id</label>
+      <div class="input-row">
+        <input id="telegram_chat_id" name="telegram_chat_id" type="text"
+               value="${esc(s.telegram_chat_id)}" placeholder="-1001234567890">
+        <button type="button" id="btn-tg-chats" class="btn ghost">读取会话</button>
+      </div>
+      <p class="field-hint">
+        先把 bot 拉进目标群，在群里 <code>@它</code> 说一句话 —— 服务收到这条消息才知道会话 ID
+        （bot 默认读不到群里的普通聊天）。私聊是正数，群与频道是 <code>-100</code> 开头。
+      </p>
+      <div id="tg-chat-list" class="chat-pick" hidden></div>
+    </div>
+    <div class="field">
+      <label for="telegram_api_base">API 地址（可留空）</label>
+      <input id="telegram_api_base" name="telegram_api_base" type="text"
+             value="${esc(s.telegram_api_base)}" placeholder="https://api.telegram.org">
+      <p class="field-hint">直连 <code>api.telegram.org</code> 不通时填自建反代地址；留空用官方地址。</p>
+    </div>
+    <div class="field">
+      <label for="telegram_proxy">代理地址（可留空）</label>
+      <div class="input-row">
+        <input id="telegram_proxy" name="telegram_proxy" type="text"
+               value="${esc(s.telegram_proxy)}" placeholder="http://192.168.1.2:7890">
+        <button type="button" id="btn-tg-check" class="btn ghost">检测连通性</button>
+      </div>
+      <p class="field-hint">
+        国内直连 Telegram 通常不通（报 TLS 握手超时）。这台机器上已有 Clash / v2ray 之类的话，
+        填它的代理地址即可，例如 <code>192.168.1.2:7890</code>；
+        不写协议按 <code>http</code> 处理，<code>socks5://</code> 也认。
+        填完直接点右边「检测连通性」—— 通了会<b>自动保存并生效</b>，不用再点保存。
+      </p>
+      <div id="tg-check-result" class="chat-pick" hidden></div>
+    </div>`;
+}
+
+function feishuGuideHtml() {
+  const s = state.settings || {};
+  const configured = !!(s.feishu_app_id && s.feishu_app_secret);
+  const live = state.stats && state.stats.feishu_longconn;
+  const statusText = !configured
+    ? '未配置，发现新版本只会记录在「通知」标签里'
+    : (live ? '已配置，按钮回调长连接正常' : '已配置，但长连接尚未就绪（保存后稍等片刻，或查看日志）');
+  return `
+    <div class="guide-card">
+      <h3>飞书 · 配置流程</h3>
+      <p class="field-hint">
+        配好后发现新版本会往飞书群推一张卡片，点卡片上的按钮直接重建容器 ——
+        手机上也能操作。本应用用<b>长连接</b>接收按钮回调，不需要公网地址、不需要域名备案。
+      </p>
+      <p class="field-hint">当前状态：<b>${esc(statusText)}</b></p>
+      <details class="setup-guide" open>
+        <summary>共 8 步，第一次配置照着做</summary>
+        <ol class="setup-steps">
+          <li>
+            <b>建应用</b>：打开
+            <a href="https://open.feishu.cn/app" target="_blank" rel="noreferrer">飞书开放平台 · 开发者后台</a>，
+            点「创建企业自建应用」，名字随意。
+          </li>
+          <li>
+            <b>加机器人能力</b>：左侧「应用能力 → 机器人」→ 添加应用能力，
+            确认「消息卡片」开关是打开的。
+          </li>
+          <li>
+            <b>取凭据</b>：左侧「凭证与基础信息」，把 <code>App ID</code> 和
+            <code>App Secret</code> 填到左侧设置项里。
+          </li>
+          <li>
+            <b>开权限</b>：左侧「开发配置 → 权限管理 → API 权限」，搜到下面两项并开通，
+            权限类型都选<b>「应用身份」</b>：
+            <ul class="scope-list">
+              <li><code>im:message:send_as_bot</code></li>
+              <li><code>im:chat:readonly</code></li>
+            </ul>
+          </li>
+          <li>
+            <b>配回调</b>：左侧「开发配置 → 事件与回调」→ 切到<b>「回调配置」标签页</b>：
+            <ul class="scope-list">
+              <li>「订阅方式」选<b>「使用长连接接收回调」</b>，点保存</li>
+              <li>「已订阅的回调」→ 添加回调 → 搜<b>「卡片回传交互」</b>
+                （<code>card.action.trigger</code>）→ 确认添加</li>
+            </ul>
+          </li>
+          <li>
+            <b>发布版本</b>：左侧「应用发布 → 版本管理与发布」→ 创建版本 → 提交发布。
+            改完权限和回调不发布，点按钮会报 <code>200340</code>。
+          </li>
+          <li>
+            <b>把机器人拉进群</b>：飞书里打开目标群 → 右上角设置 → 群机器人 → 添加机器人，
+            选中你刚建的这个应用。
+          </li>
+          <li>
+            <b>取群 ID</b>：打开
+            <a href="https://open.feishu.cn/api-explorer" target="_blank" rel="noreferrer">飞书 API 调试台</a>，
+            搜「获取机器人所在的群列表」，以<b>应用身份</b>调用，
+            返回里的 <code>chat_id</code> 填到左侧设置项里。
+          </li>
+        </ol>
+      </details>
+    </div>`;
+}
+
+function telegramGuideHtml() {
+  const s = state.settings || {};
+  const live = state.stats && state.stats.telegram_polling;
+  const statusText = !s.telegram_bot_token
+    ? '未配置，发现新版本只会记录在「通知」标签里'
+    : (live ? '已配置，按钮回调长轮询运行中' : '已配置，但长轮询尚未就绪（保存后稍等片刻，或看下方报错）');
+  return `
+    <div class="guide-card">
+      <h3>Telegram · 配置流程</h3>
+      <p class="field-hint">
+        和飞书一样：发现新版本推一条带按钮的消息，点按钮直接重建容器。
+        服务用<b>长轮询</b>接收按钮点击，同样不需要公网地址 ——
+        只要这台机器能访问 <code>api.telegram.org</code>。
+      </p>
+      <p class="field-hint">当前状态：<b>${esc(statusText)}</b></p>
+      <details class="setup-guide" open>
+        <summary>共 5 步，第一次配置照着做</summary>
+        <ol class="setup-steps">
+          <li>
+            <b>建 bot</b>：在 Telegram 里搜 <code>@BotFather</code> → 发 <code>/newbot</code> →
+            依次给它一个显示名和用户名（用户名必须以 <code>bot</code> 结尾）→
+            它回你一串 <code>123456789:AAH…</code>，这就是 <b>Bot Token</b>，填到左侧。
+          </li>
+          <li>
+            <b>保存一次</b>：点页面底部「保存设置」。填了 Token 服务就会开始长轮询，
+            这一步不做，后面的会话 ID 读不到。
+          </li>
+          <li>
+            <b>让 bot 收到一条消息</b>：把 bot 拉进目标群（群里加成员时搜它的用户名），
+            然后<b>在群里 @ 它说一句话</b>；只给自己用就直接私聊它发个「hi」。
+            <br>Telegram 的 bot 默认只看得到「@ 它」和「/ 命令」，群里别人闲聊它收不到 ——
+            成员列表里显示「无权读取消息」就是这个原因。想让它读到所有消息，
+            找 <code>@BotFather</code> 发 <code>/setprivacy</code> → 选它 → <code>Disable</code>，
+            然后<b>把 bot 移出群再重新拉进来</b>。
+            <br>这条消息只是为了让服务知道「会话 ID 是多少」。
+          </li>
+          <li>
+            <b>取 chat_id</b>：点左侧「读取会话」，列表里会冒出刚说话的会话，
+            点一下即自动填入。群与频道是 <code>-100</code> 开头的负数，私聊是正数。
+          </li>
+          <li>
+            <b>验证按钮</b>：保存后点「发送测试消息」，消息里带一个按钮 ——
+            点一下、消息变成「回调已收到」，才算「发消息 + 收回调」两条链路都通了。
+          </li>
+        </ol>
+      </details>
+      <p class="field-hint">
+        收不到消息时按顺序看：先点上面的「检测连通性」——
+        国内直连 <code>api.telegram.org</code> 基本不通，报的是 TLS 握手超时，
+        填好代理地址就通了；连通之后还是读不到会话，才是隐私模式或 webhook 的问题
+        （群里普通聊天 bot 默认读不到，只认 <code>@它</code> 与 <code>/命令</code>）。
+      </p>
+    </div>`;
+}
+
+function renderGuide(ch) {
+  const guide = $('#settings-guide');
+  if (!guide) return;
+  if (ch === 'telegram') {
+    guide.innerHTML = telegramGuideHtml();
+    return;
+  }
+  guide.innerHTML = feishuGuideHtml();
+}
+
+function renderSettings() {
+  const s = state.settings;
+  if (!s) return;
+  const ch = currentChannel();
+  const testLabel = ch === 'telegram' ? '发送测试消息' : '发送飞书测试卡片';
+
+  $('#settings-form').innerHTML = `
+    <div class="field">
+      <label for="scan_interval">扫描间隔（秒，0 表示关闭定时扫描）</label>
+      <input id="scan_interval" name="scan_interval" type="number" min="0" value="${s.scan_interval}">
+      <p class="field-hint">最小 30 秒。修改后无需重启即可生效。</p>
+    </div>
+    <div class="field">
+      <label for="health_check_wait">更新后健康检查观察窗口（秒）</label>
+      <input id="health_check_wait" name="health_check_wait" type="number" min="0" max="600" value="${s.health_check_wait}">
+      <p class="field-hint">新容器启动后最多等待这么久，未通过则按下方策略处理。</p>
+    </div>
+
+    <h3 class="form-section">通知渠道</h3>
+    <p class="field-hint">发现新版本时把提醒推到哪里。<b>填好凭据的渠道都会收到</b>，右栏是当前所选渠道的完整配置流程 —— 选谁只决定改哪一份配置，不影响另一个照常推送。</p>
+    <div class="channel-picker">${channelChipsHtml(ch)}</div>
+    <p class="field-hint">灰色的渠道还在做，暂时不能选。</p>
+    ${ch === 'telegram' ? telegramFieldsHtml(s) : feishuFieldsHtml(s)}
+
+    <div class="notify-test">
+      <button type="button" id="btn-test-notify" class="btn ghost">${testLabel}</button>
+      <p class="field-hint">
+        填完上面的凭据<b>先保存一次</b>，再点这里发一条测试消息 ——
+        消息里带按钮，点一下、消息变成「回调已收到」，才算「发得出去 + 收得回来」两条链路都通了。
+      </p>
+      <div id="notify-callback-state" class="callback-state" hidden></div>
     </div>
 
     <h3 class="form-section">注册表加速</h3>
@@ -667,32 +896,15 @@ function renderSettings() {
       <label class="check"><input type="checkbox" id="keep_old_container" ${s.keep_old_container ? 'checked' : ''}> 更新成功后保留旧容器（便于手动回退）</label>
       <label class="check"><input type="checkbox" id="registry_insecure" ${s.registry_insecure ? 'checked' : ''}> 允许 http 明文注册表（本地地址自动走 http，无需勾选）</label>
     </div>
-    <p class="field-hint">更新动作始终由人确认：飞书卡片点「立即更新」，或在此页「容器」标签点「更新」。
+    <p class="field-hint">更新动作始终由人确认：提醒消息里点「立即更新」，或在此页「容器」标签点「更新」。
       环境变量 <code>AUTO_UPDATE=true</code> 可改为发现即更新，该开关不在本页展示，保存设置不会改动它。</p>
+
     <div class="form-actions">
       <button type="submit" class="btn primary">保存设置</button>
-      <button type="button" id="btn-test-feishu" class="btn ghost">发送飞书测试卡片</button>
     </div>
-    <p class="field-hint">测试卡片上带一个按钮 —— 点一下、卡片变成「回调已收到」，
-      说明按钮交互这条链路也通了（它和「收得到消息」是两回事）。</p>
-    <div id="feishu-callback-state" class="callback-state" hidden></div>
   `;
 
-  // 飞书那套指引有八步，挤在 720px 的表单里读起来很局促。整块搬到右侧栏 ——
-  // 直接搬 DOM 节点，省得把那一大段 HTML 复制两份、改一处漏一处。
-  const guide = $('#settings-guide');
-  guide.innerHTML = `
-    <div class="guide-card">
-      <h3>飞书通知配置指引</h3>
-      <p class="field-hint">
-        配好之后，发现新版本会往飞书群推一张卡片，点卡片上的按钮就能直接重建容器 ——
-        手机上也能操作，不必打开这个后台页面。本应用用<b>长连接</b>接收按钮回调，
-        不需要公网地址、不需要域名备案、不需要反向代理。
-      </p>
-      <p class="field-hint">当前状态：<b>${esc(statusText)}</b></p>
-    </div>`;
-  const guideBlock = $('#settings-form .setup-guide');
-  if (guideBlock) guide.querySelector('.guide-card').appendChild(guideBlock);
+  renderGuide(ch);
 }
 
 /* ---------- 数据加载 ---------- */
@@ -975,15 +1187,25 @@ async function openTaskLog(id) {
   }
 }
 
-async function saveSettings(ev) {
-  ev.preventDefault();
+// settingsPayload 把当前表单收集成一份完整设置。
+//
+// 切换渠道会整块重绘表单，没显示的那一组输入已不在 DOM 里。
+// 先 stash 再取值，否则在 Telegram 页保存会把飞书凭据一起抹成空串。
+function settingsPayload() {
+  stashChannelFields();
   const prev = state.settings || {};
-  const payload = {
+  const cur = state.settings || {};
+  return {
     scan_interval: Number($('#scan_interval').value),
     health_check_wait: Number($('#health_check_wait').value),
-    feishu_app_id: $('#feishu_app_id').value.trim(),
-    feishu_app_secret: $('#feishu_app_secret').value.trim(),
-    feishu_chat_id: $('#feishu_chat_id').value.trim(),
+    notify_channel: currentChannel(),
+    feishu_app_id: cur.feishu_app_id || '',
+    feishu_app_secret: cur.feishu_app_secret || '',
+    feishu_chat_id: cur.feishu_chat_id || '',
+    telegram_bot_token: cur.telegram_bot_token || '',
+    telegram_chat_id: cur.telegram_chat_id || '',
+    telegram_api_base: cur.telegram_api_base || '',
+    telegram_proxy: cur.telegram_proxy || '',
     registry_mirror: $('#registry_mirror').value.trim(),
     admin_user: ($('#admin_user').value || '').trim(),
     admin_password: $('#admin_password').value || '',
@@ -995,13 +1217,13 @@ async function saveSettings(ev) {
     auto_update: !!prev.auto_update,
     require_confirm: prev.require_confirm !== undefined ? prev.require_confirm : true,
   };
+}
 
-  try {
-    state.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(payload) });
-  } catch (e) {
-    toast('保存失败：' + e.message, 'danger');
-    return;
-  }
+// persistSettings 提交当前表单，成功后刷新页面手里的那一份设置。
+// 失败时抛出去，由调用方决定怎么提示 —— 「保存设置」与「检测连通性」共用它。
+async function persistSettings() {
+  const payload = settingsPayload();
+  state.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(payload) });
 
   // 凭据变了就立刻换掉本页手里的那一份，
   // 否则下一个请求就会被自己刚设的密码挡在门外。
@@ -1012,6 +1234,19 @@ async function saveSettings(ev) {
   } else {
     writeAuth('');
   }
+  return payload;
+}
+
+async function saveSettings(ev) {
+  ev.preventDefault();
+  const prev = state.settings || {};
+  let payload;
+  try {
+    payload = await persistSettings();
+  } catch (e) {
+    toast('保存失败：' + e.message, 'danger');
+    return;
+  }
 
   renderSettings();
 
@@ -1019,40 +1254,50 @@ async function saveSettings(ev) {
   toast(mirrorChanged ? '已保存，加速地址已生效，点「立即扫描」验证' : '设置已保存并生效');
 }
 
-async function testFeishu() {
-  const btn = $('#btn-test-feishu');
-  btn.disabled = true;
-
-  // 先取一次回调计数当基线，之后只要它变大，就说明回调真的到了。
-  // 用增量而不是绝对时间，是为了不被上一次测试留下的旧记录干扰。
-  let base = 0;
-  try {
-    const st = await api('/api/feishu/status');
-    base = st.callback_count || 0;
-  } catch (_) { /* 状态读不到不影响发卡片 */ }
-
-  try {
-    await api('/api/feishu/test', { method: 'POST' });
-    toast('测试卡片已发送，请到飞书群点一下卡片上的按钮');
-  } catch (e) {
-    toast('发送失败：' + e.message, 'danger');
-    btn.disabled = false;
-    return;
-  }
-  btn.disabled = false;
-  waitFeishuCallback(base);
+// notifyStatusURL 各渠道的链路状态地址。
+function notifyStatusURL(ch) {
+  return ch === 'telegram' ? '/api/telegram/status' : '/api/feishu/status';
 }
 
-// waitFeishuCallback 轮询等待按钮回调到达，最多 90 秒。
+// testNotify 给当前渠道发一条测试消息，然后盯着按钮回调。
 //
-// 卡片发出去只证明「消息通道」通；按钮点击走的是长连接回调，是另一条链路。
-// 等一个确定的信号回来，用户就不必去翻容器日志猜到底配没配对。
-function waitFeishuCallback(base) {
-  const el = $('#feishu-callback-state');
+// 「消息发得出去」与「按钮点得动」是两条独立链路：卡片发到了群里只能证明前者。
+// 所以发完不撒手，继续等回调计数变大，等到了才算是真的配对了。
+async function testNotify() {
+  const ch = currentChannel();
+  const btn = $('#btn-test-notify');
+  if (btn) btn.disabled = true;
+
+  // 先取一次计数当基线：用增量而不是绝对时间，避免被上一次测试留下的旧记录干扰。
+  let base = 0;
+  try {
+    const st = await api(notifyStatusURL(ch));
+    base = st.callback_count || 0;
+  } catch (_) { /* 状态读不到不影响发消息 */ }
+
+  try {
+    await api(ch === 'telegram' ? '/api/telegram/test' : '/api/feishu/test', { method: 'POST' });
+    toast(ch === 'telegram'
+      ? '测试消息已发送，请在 Telegram 里点一下消息上的按钮'
+      : '测试卡片已发送，请到飞书群里点一下卡片上的按钮');
+  } catch (e) {
+    toast('发送失败：' + e.message, 'danger');
+    if (btn) btn.disabled = false;
+    return;
+  }
+  if (btn) btn.disabled = false;
+  waitCallback(base, ch);
+}
+
+// waitCallback 轮询等待按钮回调到达，最多 90 秒。
+function waitCallback(base, ch) {
+  const el = $('#notify-callback-state');
   if (!el) return;
   el.hidden = false;
   el.className = 'callback-state waiting';
-  el.textContent = '⏳ 等待按钮回调…请在飞书群里点一下卡片上的按钮';
+  el.textContent = ch === 'telegram'
+    ? '⏳ 等待按钮回调…请在 Telegram 里点一下消息上的按钮'
+    : '⏳ 等待按钮回调…请在飞书群里点一下卡片上的按钮';
 
   let left = 45; // 45 次 × 2 秒 = 90 秒
   const timer = setInterval(async () => {
@@ -1060,13 +1305,17 @@ function waitFeishuCallback(base) {
     if (left <= 0) {
       clearInterval(timer);
       el.className = 'callback-state bad';
-      el.innerHTML = '未收到按钮回调。请检查「回调配置」里是否加了 <code>card.action.trigger</code>，' +
-        '以及改完权限/回调后是否<b>发布了新版本</b>。';
+      el.innerHTML = ch === 'telegram'
+        ? '未收到按钮回调。请确认 bot 没在别处设过 webhook（它与长轮询互斥），' +
+          '并查看设置页上方的长轮询状态与容器日志。'
+        : '未收到按钮回调。请检查「回调配置」里是否加了 <code>card.action.trigger</code>，' +
+          '以及改完权限/回调后是否<b>发布了新版本</b>。';
       return;
     }
     try {
-      const st = await api('/api/feishu/status');
-      if ((st.callback_count || 0) > base) {
+      const st = await api(notifyStatusURL(ch));
+      // 两个渠道共用一个回调计数器，必须再核一次「这次回调来自本渠道」。
+      if ((st.callback_count || 0) > base && st.last_channel === ch) {
         clearInterval(timer);
         el.className = 'callback-state ok';
         const t = st.last_callback_at ? fmtTime(Date.parse(st.last_callback_at)) : '';
@@ -1074,6 +1323,134 @@ function waitFeishuCallback(base) {
       }
     } catch (_) { /* 单次失败忽略，下一轮重试 */ }
   }, 2000);
+}
+
+// checkTelegram 只验证「连不连得上 + Token 对不对」。
+//
+// 这一步刻意不要求 chat_id：「读不到会话」和「连不上 Telegram」现象很像，
+// 但病因完全不同。带上前一次填的值去试，是因为刚改完代理还没保存时最想验证的就是它。
+async function checkTelegram() {
+  const box = $('#tg-check-result');
+  const btn = $('#btn-tg-check');
+  if (!box) return;
+  if (btn) btn.disabled = true;
+  box.hidden = false;
+  box.className = 'chat-pick loading';
+  box.textContent = '正在连接 Telegram…';
+  try {
+    const r = await api('/api/telegram/check', {
+      method: 'POST',
+      body: JSON.stringify({
+        telegram_bot_token: ($('#telegram_bot_token') || {}).value || '',
+        telegram_api_base: ($('#telegram_api_base') || {}).value || '',
+        telegram_proxy: ($('#telegram_proxy') || {}).value || '',
+      }),
+    });
+    box.className = 'chat-pick empty';
+    const via = r.proxy ? '代理 ' + esc(r.proxy) : '直连';
+    if (r.ok) {
+      // 检测通过就把这份配置存下来。
+      //
+      // 检测用的是「输入框里的值」，长轮询用的是「已保存的值」：只填不保存时
+      // 检测永远是通的，会话列表却一直是空的 —— 现象上像检测在骗人。
+      // 而这本来就是用户填代理的目的，多让他点一次保存纯属多余。
+      const saved = state.settings || {};
+      const dirty = ['telegram_bot_token', 'telegram_chat_id', 'telegram_api_base', 'telegram_proxy']
+        .some((k) => (saved[k] || '').trim() !== ((($('#' + k) || {}).value || '').trim()))
+        || currentChannel() !== 'telegram';
+
+      let note;
+      if (dirty) {
+        try {
+          await persistSettings();
+          // 保存会重绘整块表单，原来的结果框已经不在文档里了，
+          // 重新渲染之后要再取一次新节点填回去。
+          renderSettings();
+          note = '<p class="chat-ok">✓ 已自动保存并生效，现在可以「读取会话」</p>';
+        } catch (e) {
+          note = `<p class="chat-warn">⚠ 检测通过，但保存失败：${esc(e.message)}
+            —— 点页面底部「保存设置」重试。</p>`;
+        }
+      } else {
+        note = '<p class="hint-text">这份配置已经保存过了，无需再次保存。</p>';
+      }
+
+      const out = $('#tg-check-result') || box;
+      out.hidden = false;
+      out.className = 'chat-pick empty';
+      out.innerHTML = `<p class="chat-ok">✓ 连得上，Token 有效：@${esc(r.username)}</p>
+        <p class="hint-text">${esc(r.apiBase)} · ${via}</p>${note}`;
+      return;
+    } else {
+      box.innerHTML = `<p class="chat-err">${esc(r.error || '未知错误')}</p>
+        <p>这里失败说明是<b>网络或代理</b>的问题，跟 chat_id 无关 ——
+        填好代理地址再点一次，通了再去读会话。</p>
+        <p class="hint-text">${esc(r.apiBase)} · ${via}</p>`;
+    }
+  } catch (e) {
+    box.className = 'chat-pick empty';
+    box.innerHTML = `<p class="chat-err">检测失败：${esc(e.message)}</p>`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// loadTelegramChats 读取 bot 最近收到过消息的会话，点一下就填进 chat_id。
+//
+// Telegram 拿不到「这个 bot 在哪些群里」的列表接口，只能上报最近见过的会话；
+// 所以文档里那一步「先在群里说句话」是必须的。而「说句话」能不能被 bot 收到，
+// 还取决于群的隐私模式 —— 空列表时把这两件事一起说清楚，否则用户会以为是自己配错了。
+async function loadTelegramChats() {
+  const box = $('#tg-chat-list');
+  const btn = $('#btn-tg-chats');
+  if (!box) return;
+  if (btn) btn.disabled = true;
+  box.hidden = false;
+  box.className = 'chat-pick loading';
+  box.textContent = '读取中…';
+  try {
+    const st = await api('/api/telegram/status');
+    const chats = st.chats || [];
+    if (!chats.length) {
+      box.className = 'chat-pick empty';
+      const err = st.last_error
+        ? `<p class="chat-err">长轮询报错：${esc(st.last_error)}</p>`
+        : '';
+      // 有报错就先说网络，没报错才轮到隐私模式 —— 两种病因的现象一模一样，
+      // 一起列出来会让人两条路都试一半。
+      const body = st.last_error
+        ? `<p><b>先解决连不上的问题：</b>填好上面的代理地址，点「检测连通性」跑通，
+             再回来读会话。国内直连 <code>api.telegram.org</code> 基本不通。</p>
+           <p>如果检测连通性明明是通的，那就是代理<b>没保存成功</b> ——
+             长轮询只认保存过的配置，点一下「保存并应用」再重新读。</p>`
+        : `<p><b>群里的普通聊天，bot 默认是收不到的</b>（成员列表里会显示「无权读取消息」）。两个办法：</p>
+           <p>① 在群里 <code>@你的bot用户名</code> 说一句话，或发 <code>/start</code>；<br>
+              ② 找 <code>@BotFather</code> 发 <code>/setprivacy</code> → 选中这个 bot → <code>Disable</code>，
+              改完<b>把 bot 移出群再重新拉进来</b>（不退群重进不生效）。</p>
+           <p class="hint-text">做完再点一次「读取会话」。私聊 bot 不受这个限制。</p>`;
+      // 底下一行是「服务实际在用什么配置」。读不到会话时这三项比任何文案都管用：
+      // 轮询没跑起来、地址填错、代理没生效，一看就知道该改哪儿。
+      const diag = [
+        '轮询：' + (st.polling ? '运行中' : (st.configured ? '未运行' : 'Token 未配置')),
+        'API：' + (st.api_base || 'https://api.telegram.org'),
+        '代理：' + (st.proxy || '直连'),
+      ].join(' · ');
+      box.innerHTML = `<p>还没收到过任何消息。</p>${err}${body}
+        <p class="chat-diag mono">${esc(diag)}</p>`;
+      return;
+    }
+    box.className = 'chat-pick';
+    box.innerHTML = chats.map((c) => `
+      <button type="button" class="chat-item" data-chat="${esc(c.id)}">
+        <span class="chat-title">${esc(c.title || c.id)}</span>
+        <span class="chat-id mono">${esc(c.id)}</span>
+      </button>`).join('');
+  } catch (e) {
+    box.className = 'chat-pick empty';
+    box.textContent = '读取失败：' + e.message;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function renderRegistryTest(res) {
@@ -1156,7 +1533,7 @@ function switchTab(name) {
 
 /* ---------- 事件绑定 ---------- */
 
-document.addEventListener('click', (ev) => {
+document.addEventListener('click', async (ev) => {
   const tab = ev.target.closest('.tab');
   if (tab) { switchTab(tab.dataset.tab); return; }
 
@@ -1207,9 +1584,40 @@ document.addEventListener('click', (ev) => {
     return;
   }
 
+  // 渠道切换：先把当前可见的输入存回 state，再换渠道重绘，
+  // 否则刚填的 token 会随表单一起丢掉。
+  const chip = ev.target.closest('.channel-chip[data-channel]');
+  if (chip) {
+    stashChannelFields();
+    if (state.settings) state.settings.notify_channel = chip.dataset.channel;
+    renderSettings();
+    return;
+  }
+
+  // 点会话即填入 chat_id 并直接保存。
+  // 那串负数没人愿意抄，填进去却还要再点一次「保存设置」，等于白填。
+  const chatItem = ev.target.closest('.chat-item[data-chat]');
+  if (chatItem) {
+    const input = $('#telegram_chat_id');
+    if (input) input.value = chatItem.dataset.chat;
+    const box = $('#tg-chat-list');
+    if (box) box.hidden = true;
+    try {
+      await persistSettings();
+      // 保存成功要重绘：渠道胶囊的「已填写凭据」、顶栏状态都得跟着变。
+      renderSettings();
+      toast('已填入会话 ID 并保存');
+    } catch (e) {
+      toast('已填入会话 ID，但保存失败：' + e.message, 'danger');
+    }
+    return;
+  }
+
   if (ev.target.id === 'btn-scan') doScan(false);
   if (ev.target.id === 'btn-force') doScan(true);
-  if (ev.target.id === 'btn-test-feishu') testFeishu();
+  if (ev.target.id === 'btn-test-notify') testNotify();
+  if (ev.target.id === 'btn-tg-chats') loadTelegramChats();
+  if (ev.target.id === 'btn-tg-check') checkTelegram();
   if (ev.target.id === 'btn-test-registry') testRegistry();
   if (ev.target.id === 'btn-clean') openCleanModal();
   if (ev.target.id === 'btn-clean-ok') doClean();

@@ -14,8 +14,9 @@ internal/registry   注册表 digest / tag 查询
 internal/version    版本号解析与比较
 internal/scanner    巡检编排（容器维度 + 镜像维度）
 internal/updater    容器重建与回滚，以及只拉镜像的更新
-internal/notify     通知路由
-internal/notify/feishu  飞书卡片与长连接回调
+internal/notify     通知路由（渠道选择、回调分发、通用投递记录）
+internal/notify/feishu    飞书卡片与长连接回调
+internal/notify/telegram  Telegram Bot API 客户端、消息与长轮询
 internal/api        REST 接口
 web/                前端单页（无需构建，go:embed 进二进制）
 
@@ -45,6 +46,12 @@ Dockerfile          多阶段构建（golang → alpine，纯静态二进制）
 
 **飞书用 WebSocket 长连接收回调。** 免公网、免备案、免反向代理；卡片必须是 2.0
 （`schema: 2.0` + 按钮 `behaviors.callback`），旧版卡片的回传交互不支持长连接。
+
+**Telegram 用 `getUpdates` 长轮询收回调。** 同样免公网；轮询与 webhook 互斥，
+所以配过 webhook 的 bot 需先 `deleteWebhook`。群与频道 chat_id 是负数，
+服务只能从「bot 最近收到过消息的会话」里得知 ID —— 这也是配置流程里必须先让它说一句话的原因。
+两个渠道共用 `Notification.Channel` + `MessageID` 与回调状态，
+加新渠道只需实现「发一条带按钮的消息」「改这条消息」「处理一次回调」三件事。
 
 **加速地址三层兜底：`用户设置 → 守护进程 registry-mirrors → 内置默认`。**
 默认值刻意**不写进环境变量默认值**，否则中间那层永远进不去。

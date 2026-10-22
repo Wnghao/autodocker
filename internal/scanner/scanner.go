@@ -614,8 +614,10 @@ func (s *Scanner) notify(ctx context.Context, img *model.Image, kind model.Notif
 		s.log.Warn("推送通知失败", "ref", img.Reference, "err", nerr)
 		return true
 	}
-	if msgID != "" {
-		_ = s.st.SetNotificationCard(id, msgID, model.CardPending)
+	if msgID != "" || len(n.Deliveries) > 0 {
+		// 投递坐标由通知实现填回 n 上：同一条提醒可能同时发到飞书和 Telegram，
+		// 两边的消息 ID 互不相干，事后要改状态得知道各去哪个平台的哪条会话找哪条消息。
+		_ = s.st.SetNotificationDeliveries(id, n.Deliveries, model.CardPending)
 	}
 	return true
 }

@@ -93,7 +93,11 @@ func (s *Store) migrate() error {
 			aliases           TEXT    NOT NULL DEFAULT '',
 			read              INTEGER NOT NULL DEFAULT 0,
 			feishu_message_id TEXT    NOT NULL DEFAULT '',
+			channel           TEXT    NOT NULL DEFAULT 'feishu',
+			chat_ref          TEXT    NOT NULL DEFAULT '',
+			message_id        TEXT    NOT NULL DEFAULT '',
 			card_state        TEXT    NOT NULL DEFAULT 'pending',
+			deliveries        TEXT    NOT NULL DEFAULT '',
 			created_at        INTEGER NOT NULL DEFAULT 0,
 			updated_at        INTEGER NOT NULL DEFAULT 0
 		)`,
@@ -158,8 +162,29 @@ var imageAddedColumns = []struct{ name, ddl string }{
 	{"ignored_digest", "TEXT NOT NULL DEFAULT ''"},
 }
 
+// notificationAddedColumns 是 1.2.4 起为 notifications 表新增的列。
+//
+// 加了 Telegram 之后，「把消息 ID 记在哪」不能再叫 feishu_message_id：
+// 更新完成后要按渠道去改原来那条消息，而两个渠道的定位方式不一样。
+// 老库的 feishu_message_id 由 addMissingColumns 回填到 message_id，不会丢历史。
+var notificationAddedColumns = []struct{ name, ddl string }{
+	{"channel", "TEXT NOT NULL DEFAULT 'feishu'"},
+	{"chat_ref", "TEXT NOT NULL DEFAULT ''"},
+	{"message_id", "TEXT NOT NULL DEFAULT ''"},
+	// 全量投递记录（JSON 数组）。同时配了两个渠道时一条提醒要各发一份，
+	// 只存一个 message_id 就只能改得动其中一个，另一个会一直停在「待更新」。
+	{"deliveries", "TEXT NOT NULL DEFAULT ''"},
+}
+
 // addMissingColumns 给老库补上新增的列。
 func (s *Store) addMissingColumns() error {
+	if err := s.addImageColumns(); err != nil {
+		return err
+	}
+	return s.addNotificationColumns()
+}
+
+func (s *Store) addImageColumns() error {
 	have, err := s.tableColumns("images")
 	if err != nil {
 		return err
@@ -180,6 +205,31 @@ func (s *Store) addMissingColumns() error {
 			`UPDATE images SET origin = CASE WHEN container_id = '' THEN 'watch' ELSE 'container' END WHERE origin = ''`,
 		); err != nil {
 			return fmt.Errorf("回填来源失败: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) addNotificationColumns() error {
+	have, err := s.tableColumns("notifications")
+	if err != nil {
+		return err
+	}
+	for _, col := range notificationAddedColumns {
+		if have[col.name] {
+			continue
+		}
+		if _, err := s.db.Exec("ALTER TABLE notifications ADD COLUMN " + col.name + " " + col.ddl); err != nil {
+			return fmt.Errorf("补列 %s 失败: %w", col.name, err)
+		}
+	}
+	// 升级前的通知都只发过飞书，把旧列的值搬到新列，
+	// 否则升级后那些还挂着的卡片点按钮能收到回调，但状态改不回去。
+	if have["feishu_message_id"] && !have["message_id"] {
+		if _, err := s.db.Exec(
+			`UPDATE notifications SET channel = 'feishu', message_id = feishu_message_id WHERE message_id = ''`,
+		); err != nil {
+			return fmt.Errorf("回填消息 ID 失败: %w", err)
 		}
 	}
 	return nil

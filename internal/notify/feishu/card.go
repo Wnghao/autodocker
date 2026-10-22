@@ -141,7 +141,7 @@ func BuildUpdateCard(n *model.Notification) map[string]any {
 			buttonElement("稍后提醒", "default", withAction(base, ActionSnooze)),
 			buttonElement("忽略本版本", "danger", withAction(base, ActionIgnore)),
 		),
-		noteElement("Autodocker · 点击即完成容器重建，原有挂载、端口与网络配置会完整保留"),
+		noteElement("AutoDocker · 点击即完成容器重建，原有挂载、端口与网络配置会完整保留"),
 	}
 	return card2(template, n.Title, elements)
 }
@@ -197,7 +197,7 @@ func BuildStateCard(n *model.Notification, state model.CardState, detail string)
 // 按钮点了毫无反应。所以测试卡片必须带按钮，点一下、卡片原地变成回执，
 // 才算把整条链路验完。
 func BuildTestCard(chatHint string) map[string]any {
-	return card2("green", "Autodocker 通知测试", []any{
+	return card2("green", "AutoDocker 通知测试", []any{
 		mdElement("**第一步已完成**：本群能正常接收卡片消息。\n" +
 			"**第二步**：请点击下面的按钮 —— 卡片变成「回调已收到」才算按钮交互也通了。"),
 		hrElement(),

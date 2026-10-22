@@ -34,12 +34,23 @@ services:
       # 额外监控本机没有运行的镜像（逗号分隔，纯远端巡检）
       # - WATCH=nginx:1.25,redis:7.2
 
-      # ---- 飞书通知（默认留空：不填就只是不推通知）----
-      # 在网页「设置 → 飞书通知」里填，这三个值只作首次启动的初值。
+      # ---- 通知渠道（默认留空：不填就只是不推通知）----
+      # 在网页「设置 → 通知渠道」里选和填，下面这些只作首次启动的初值。
+      # 同一时刻只用一个渠道：feishu / telegram
+      # - NOTIFY_CHANNEL=feishu
+
+      # ---- 飞书通知 ----
       # 必须是「企业自建应用」，群自定义机器人（webhook）收不到按钮点击。
       - FEISHU_APP_ID=
       - FEISHU_APP_SECRET=
       - FEISHU_CHAT_ID=
+
+      # ---- Telegram 通知 ----
+      # Token 找 @BotFather 发 /newbot 拿；chat_id 可在设置页点「读取会话」自动填。
+      # - TELEGRAM_BOT_TOKEN=
+      # - TELEGRAM_CHAT_ID=
+      # 直连 api.telegram.org 不通时填自建反代地址（不带 /bot 后缀）
+      # - TELEGRAM_API_BASE=
 
       # ---- 网页登录（默认留空：不启用登录）----
       # 要让端口离开内网，务必设上密码。

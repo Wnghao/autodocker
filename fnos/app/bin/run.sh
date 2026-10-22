@@ -1,5 +1,5 @@
 #!/bin/bash
-# Autodocker 启动包装脚本 —— 由 cmd/main 调用，不要在命令行直接执行。
+# AutoDocker 启动包装脚本 —— 由 cmd/main 调用，不要在命令行直接执行。
 #
 # 职责：把用户配置（$TRIM_PKGETC/config.env）装载成环境变量，
 # 补齐路径类变量，然后 exec 到真正的服务进程。
