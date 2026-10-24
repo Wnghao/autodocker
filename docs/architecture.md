@@ -17,6 +17,7 @@ internal/updater    容器重建与回滚，以及只拉镜像的更新
 internal/notify     通知路由（渠道选择、回调分发、通用投递记录）
 internal/notify/feishu    飞书卡片与长连接回调
 internal/notify/telegram  Telegram Bot API 客户端、消息与长轮询
+internal/notify/webhook   群机器人 Webhook（飞书 post + 签名、通用 JSON）
 internal/api        REST 接口
 web/                前端单页（无需构建，go:embed 进二进制）
 
@@ -130,6 +131,8 @@ Requires Go 1.26+。覆盖的是**本地无法用眼睛验证、出错代价又�
 - `internal/notify` —— 「点了更新按钮到底去拉哪个镜像」的判定；
 - `internal/notify/feishu` —— 卡片 2.0 结构约束：`schema`、`body.elements`、
   按钮 `behaviors.callback` 及其 `value`；测试卡片的按钮回传载荷；
+- `internal/notify/webhook` —— 飞书群机器人 `post` 结构与签名算法
+  （密钥是 `timestamp\nsecret`、内容是空串）、通用 JSON 的事件字段；
 - `internal/scanner` —— 通知标题与正文的措辞（含「不该出现内部术语」的反向断言）；
   以及「忽略本版本」的抑制边界：远端摘要没变就不推、变了照推；
 - `internal/store` —— 首页统计的**口径**必须只数容器，本机镜像与纯远端项不能计入；

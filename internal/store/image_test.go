@@ -76,6 +76,51 @@ func TestCountImagesByStatusFiltersByOrigin(t *testing.T) {
 	}
 }
 
+// compose 项目坐标是页面分组用的观测值：写入要能读回来，下一轮扫描
+// 也要能把旧坐标覆盖掉（容器被改到别的项目里时）。
+func TestUpsertImagePersistsComposeOwnership(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("打开测试库失败: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	img := &model.Image{
+		Reference:      "openlist:latest",
+		ContainerID:    "c-open",
+		ContainerName:  "openlist",
+		ComposeProject: "openlist",
+		ComposeService: "openlist",
+		Origin:         model.OriginContainer,
+		Status:         model.StatusUpToDate,
+	}
+	id, err := s.UpsertImage(img)
+	if err != nil {
+		t.Fatalf("写入失败: %v", err)
+	}
+	got, err := s.GetImage(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ComposeProject != "openlist" || got.ComposeService != "openlist" {
+		t.Errorf("compose 坐标应读回 openlist/openlist，实际 %s/%s",
+			got.ComposeProject, got.ComposeService)
+	}
+
+	img.ComposeProject = "media"
+	img.ComposeService = "openlist"
+	if _, err := s.UpsertImage(img); err != nil {
+		t.Fatalf("再次写入失败: %v", err)
+	}
+	got, err = s.GetImage(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ComposeProject != "media" {
+		t.Errorf("项目改名后应更新为 media，实际 %s", got.ComposeProject)
+	}
+}
+
 func total(m map[string]int) int {
 	n := 0
 	for _, v := range m {

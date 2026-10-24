@@ -170,6 +170,74 @@ func sanitizeRefComponent(s string) string {
 	return strings.Trim(out, "-._")
 }
 
+// ComposeProject 是页面「查看 / 编辑 compose 文件」需要的项目坐标，
+// 全部来历与更新用的是同一组标签，保证看到的就是更新时真正用的那份配置。
+type ComposeProject struct {
+	Project string   `json:"project"`
+	WorkDir string   `json:"workdir"`
+	Files   []string `json:"files"`
+}
+
+// ComposeProjectOf 现读容器标签还原项目坐标。
+// 不落库：换了 -f 参数或改了目录，页面上点开立刻就是新的路径。
+func (u *Updater) ComposeProjectOf(ctx context.Context, containerID string) (*ComposeProject, error) {
+	insp, err := u.dk.InspectContainer(ctx, containerID)
+	if err != nil {
+		return nil, fmt.Errorf("读取容器详情失败: %w", err)
+	}
+	t := detectCompose(insp)
+	if t == nil {
+		return nil, errors.New("这个容器不是 compose 起的，没有可查看的项目文件")
+	}
+	return &ComposeProject{Project: t.project, WorkDir: t.workDir, Files: t.files}, nil
+}
+
+// ErrBusy 已有更新任务在跑，compose 应用先让路。
+var ErrBusy = errors.New("已有更新任务正在执行，请稍后再试")
+
+// composeApplyTimeout 页面上的「应用」是同步请求，不能让浏览器无限等。
+const composeApplyTimeout = 5 * time.Minute
+
+// ComposeApply 按项目自己的文件执行一次 compose up -d。
+//
+// 与更新路径的区别：这里不比版本、不换镜像，只让改过的配置文件生效；
+// 镜像 tag 变了且本机没有时 compose 会自己拉。
+func (u *Updater) ComposeApply(ctx context.Context, p *ComposeProject) (*hookx.Result, error) {
+	if p == nil || p.Project == "" || p.WorkDir == "" || len(p.Files) == 0 {
+		return nil, errors.New("compose 项目坐标不完整")
+	}
+	if u.Busy() {
+		return nil, ErrBusy
+	}
+	u.mu.Lock()
+	opt := u.opt
+	u.mu.Unlock()
+	if opt.Hook == nil {
+		return nil, errors.New("服务端未启用脚本执行器")
+	}
+
+	t := &composeTarget{project: p.Project, workDir: p.WorkDir, files: p.Files}
+	spec := &model.HookSpec{Enabled: true, Cwd: t.workDir, Mounts: t.extraMounts()}
+	runCtx, cancel := context.WithTimeout(ctx, composeApplyTimeout)
+	defer cancel()
+	return opt.Hook.Run(runCtx, spec, t.composeApplyScript(), t.project)
+}
+
+// composeApplyScript 让改过的配置生效。
+// 先 config --quiet 预检：YAML 写坏了在这里就失败，不会动到任何容器。
+func (t *composeTarget) composeApplyScript() string {
+	var b strings.Builder
+	b.WriteString("set -e\n")
+	b.WriteString("if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then\n")
+	b.WriteString("  echo '辅助镜像里没有 docker compose，请把 HOOK_IMAGE 换成自带 compose 插件的 runner'\n")
+	b.WriteString("  exit " + strconv.Itoa(composeFallbackExit) + "\n")
+	b.WriteString("fi\n")
+	b.WriteString("if ! docker compose " + t.args("") + " config --quiet 2>/tmp/ad-compose-err; then\n")
+	b.WriteString("  echo 'compose 配置读不通：'\n  sed -n '1,20p' /tmp/ad-compose-err\n  exit 21\nfi\n")
+	b.WriteString("docker compose " + t.args("") + " up -d --no-color\n")
+	return b.String()
+}
+
 func shq(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

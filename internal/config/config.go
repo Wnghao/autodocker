@@ -38,11 +38,16 @@ type Config struct {
 	FeishuUseLongConn       bool
 
 	// 通知渠道与 Telegram
-	NotifyChannel    string // feishu / telegram，留空自动判定
+	NotifyChannel    string // feishu / telegram / webhook，留空自动判定
 	TelegramBotToken string
 	TelegramChatID   string
 	TelegramAPIBase  string
 	TelegramProxy    string
+
+	// Webhook（如飞书群机器人）
+	WebhookURL    string
+	WebhookSecret string
+	WebhookFormat string
 
 	// 更新策略
 	AutoUpdateEnabled bool // 检测到更新后是否无需确认直接更新
@@ -63,6 +68,12 @@ type Config struct {
 	// 认证
 	AdminUser     string
 	AdminPassword string
+
+	// compose 文件访问：宿主机根目录 → 面板容器内的挂载点。
+	// 面板默认只看得到 docker.sock，要读写项目文件必须把宿主机目录挂进来
+	// （103 上是 - /opt/1panel:/host/1panel）。超出这个根目录的文件一律不展示。
+	ComposeHostRoot  string
+	ComposeMountRoot string
 
 	// Web
 	PublicBaseURL string // 构建卡片回调/回跳链接用
@@ -92,6 +103,9 @@ func Load() (*Config, error) {
 		TelegramChatID:          envStr("TELEGRAM_CHAT_ID", ""),
 		TelegramAPIBase:         envStr("TELEGRAM_API_BASE", ""),
 		TelegramProxy:           envStr("TELEGRAM_PROXY", ""),
+		WebhookURL:              envStr("WEBHOOK_URL", ""),
+		WebhookSecret:           envStr("WEBHOOK_SECRET", ""),
+		WebhookFormat:           envStr("WEBHOOK_FORMAT", ""),
 		AutoUpdateEnabled:       envBool("AUTO_UPDATE", false),
 		RequireConfirm:          envBool("REQUIRE_CONFIRM", true),
 		UpdateTimeout:           time.Duration(envInt("UPDATE_TIMEOUT", 300)) * time.Second,
@@ -105,6 +119,8 @@ func Load() (*Config, error) {
 		AdminUser:               envStr("ADMIN_USER", ""),
 		AdminPassword:           envStr("ADMIN_PASSWORD", ""),
 		PublicBaseURL:           strings.TrimRight(envStr("PUBLIC_BASE_URL", ""), "/"),
+		ComposeHostRoot:         envStr("COMPOSE_HOST_ROOT", "/opt/1panel"),
+		ComposeMountRoot:        envStr("COMPOSE_MOUNT_ROOT", "/host/1panel"),
 	}
 
 	if c.Port <= 0 || c.Port > 65535 {

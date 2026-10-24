@@ -54,6 +54,8 @@ func (s *Store) migrate() error {
 			reference       TEXT    NOT NULL,
 			container_id    TEXT    NOT NULL DEFAULT '',
 			container_name  TEXT    NOT NULL DEFAULT '',
+			compose_project TEXT    NOT NULL DEFAULT '',
+			compose_service TEXT    NOT NULL DEFAULT '',
 			origin          TEXT    NOT NULL DEFAULT '',
 			image_id        TEXT    NOT NULL DEFAULT '',
 			size_bytes      INTEGER NOT NULL DEFAULT 0,
@@ -163,6 +165,9 @@ var imageAddedColumns = []struct{ name, ddl string }{
 	{"ignored_digest", "TEXT NOT NULL DEFAULT ''"},
 	// 脚本型监控项的 hook 配置（JSON），见 model.HookSpec。
 	{"hook_spec", "TEXT NOT NULL DEFAULT ''"},
+	// compose 项目坐标，供容器页按项目分组；老库补列后由下一轮扫描回填。
+	{"compose_project", "TEXT NOT NULL DEFAULT ''"},
+	{"compose_service", "TEXT NOT NULL DEFAULT ''"},
 }
 
 // notificationAddedColumns 是 1.2.4 起为 notifications 表新增的列。

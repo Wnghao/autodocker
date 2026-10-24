@@ -26,9 +26,13 @@
 
 ## 特性
 
-- **通知渠道可选**：飞书（企业自建应用，长连接收回调）与 Telegram（bot 长轮询），
-  填好凭据的渠道都会收到提醒，可以同时用两个。设置页左栏选渠道，右栏是所选渠道的完整配置流程。
+- **通知渠道可选**：飞书（企业自建应用，长连接收回调）、Telegram（bot 长轮询），
+  以及任意 Webhook（如飞书群机器人，单向推送）。填好凭据的渠道都会收到提醒，可以同时用。
+  设置页左栏选渠道，右栏是所选渠道的完整配置流程。
 - **容器与镜像分开管理**：容器页看「在跑的东西要不要更新」，镜像页看「磁盘上有什么、能不能清」。
+- **容器按 compose 项目分组**：两个及以上容器才折叠成组，组头显示服务数与有更新数，点一下折叠，页头可一键全部收起/展开；
+- **直接查看 / 编辑 compose 文件**：容器行上的 `compose` 胶囊打开项目自己的配置，保存先留 `.bak-时间戳` 备份，改完可一键 `compose up -d` 应用（需把宿主机目录挂进面板）；
+  组内仍是一容器一行，「更新」只重建对应的那个服务。
 - **两种检测模式自动判定**：浮动 tag 比摘要；版本号 tag 额外巡检 tag 列表，出现更高版本时提示。
 - **按钮按状态渲染**，不摆灰按钮；检测失败的原因直接写在容器名下方。
 - **两个忽略粒度**：卡片上「忽略本版本」只放行这一次远端内容，作者推了新版本照常提醒；
@@ -111,7 +115,7 @@ Docker Hub 拉不动时换 GHCR：`ghcr.io/haihaipypy/autodocker:latest`，内�
 
 ## 通知配置
 
-两个渠道任选其一，都在「设置 → 通知渠道」里配。
+三个渠道都在「设置 → 通知渠道」里配，填好的会同时收到提醒。
 
 ### 飞书
 
@@ -144,6 +148,18 @@ bot 默认读不到群里的普通聊天（成员列表写「无权读取消息�
 ![Telegram 里收到的新版本提醒](docs/images/telegram-card-update.png)
 
 → [Telegram 配置全流程](docs/telegram.md)
+
+### Webhook（含飞书群机器人）
+
+设置页选 **Webhook**，把群机器人的入站地址贴进去即可，格式按地址自动识别。
+飞书群：群设置 → 群机器人 → 添加机器人 → **自定义机器人** → 复制
+`https://open.feishu.cn/open-apis/bot/v2/hook/…`。
+机器人开了「签名校验」就把密钥一并填上。
+
+> webhook 只能单向推送：消息上没有按钮，更新完成后会**另发一条**结果消息。
+> 想「在群里点一下就更新」，用飞书自建应用或 Telegram。
+
+→ [Webhook 配置与通用 JSON 格式](docs/webhook.md)
 
 ## 安全
 
@@ -178,6 +194,7 @@ MIT，见 [LICENSE](LICENSE)。
 | [install-docker.md](docs/install-docker.md) | Docker / Compose 部署、全部环境变量、本地开发 |
 | [feishu.md](docs/feishu.md) | 飞书自建应用配置全流程（含截图） |
 | [telegram.md](docs/telegram.md) | Telegram bot 配置全流程、收不到消息的排查 |
+| [webhook.md](docs/webhook.md) | Webhook / 飞书群机器人配置、签名校验、通用 JSON |
 | [usage.md](docs/usage.md) | 两个列表的边界、忽略粒度、检测模式、界面 |
 | [architecture.md](docs/architecture.md) | 技术选型、重建保真规则、存储坑位、测试 |
 | [faq.md](docs/faq.md) | 安全须知、已知边界、常见故障排查 |

@@ -233,14 +233,15 @@ func scheduler(ctx context.Context, sc *scanner.Scanner, srv *api.Server, logger
 // 判断依据是「实际生效的设置」而不是环境变量：飞书凭据现在存在数据库里，
 // 只看环境变量会在每次重启时误报一遍「未配置飞书」。
 func configHints(s model.Settings) string {
-	var problems []string
-	if s.FeishuAppID == "" || s.FeishuAppSecret == "" {
-		problems = append(problems, "未配置飞书应用，发现新版本只能通过网页操作更新")
+	// 任一渠道填全了就能推送。这里只看设置里的凭据，不看运行时状态 ——
+	// 启动时还没真正发过消息，没有更可靠的依据。
+	feishuReady := s.FeishuAppID != "" && s.FeishuAppSecret != "" && s.FeishuChatID != ""
+	telegramReady := s.TelegramBotToken != "" && s.TelegramChatID != ""
+	webhookReady := strings.TrimSpace(s.WebhookURL) != ""
+	if feishuReady || telegramReady || webhookReady {
+		return ""
 	}
-	if s.FeishuChatID == "" {
-		problems = append(problems, "未配置飞书接收群，通知无法推送")
-	}
-	return strings.Join(problems, "；")
+	return "未配置任何通知渠道，发现新版本只会记录在网页「通知」里"
 }
 
 func newLogger(level string) *slog.Logger {

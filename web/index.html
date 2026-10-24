@@ -97,6 +97,7 @@
     <div class="panel-head">
       <h2>容器</h2>
       <div class="panel-head-right">
+        <button id="btn-groups-toggle" class="btn ghost small" type="button" hidden>全部收起</button>
         <input id="container-search" class="input" type="search" placeholder="搜索容器或镜像">
       </div>
     </div>
@@ -182,9 +183,6 @@
       <code>/var/run/docker.sock</code> 总是自动挂上，所以脚本里的 <code>docker</code>、<code>compose</code> 都作用在宿主机上。
       路径请写宿主机的绝对路径。整份 JSON 可以直接复制粘贴，字段名以这份模板为准。
     </p>
-    <p class="field-hint">
-      执行脚本等于在这台机器上跑命令，所以<b>必须先在「设置」里填访问密码</b>才能保存这份配置。
-    </p>
     <textarea id="hook-json" class="json-area mono" rows="16" spellcheck="false"></textarea>
     <div id="hook-result" class="hook-result" hidden></div>
     <div class="form-actions">
@@ -192,6 +190,28 @@
       <button type="button" class="btn ghost" id="btn-hook-check">测试检查</button>
       <button type="button" class="btn ghost danger" id="btn-hook-clear">清除脚本</button>
       <button type="button" class="btn ghost" data-close-modal="1">取消</button>
+    </div>
+  </div>
+</div>
+
+<div id="compose-modal" class="modal" hidden>
+  <div class="modal-card wide">
+    <h3 id="compose-modal-title">compose 文件</h3>
+    <p class="field-hint">
+      这里读写的是项目自己那份 compose 文件。保存会先在同目录留一份 <code>.bak-时间戳</code> 备份，
+      但不会重启容器；要让改动生效，点下面的「应用」执行 <code>docker compose up -d</code>。
+    </p>
+    <div class="compose-meta">
+      <span class="mono" id="compose-workdir"></span>
+      <select id="compose-file-select" class="mode-select" hidden></select>
+    </div>
+    <textarea id="compose-content" class="json-area mono" rows="20" spellcheck="false"></textarea>
+    <div id="compose-result" class="hook-result" hidden></div>
+    <div class="form-actions">
+      <button type="button" class="btn primary" id="btn-compose-save">保存</button>
+      <button type="button" class="btn ghost" id="btn-compose-apply"
+              title="对整个项目执行 docker compose up -d，配置有变化的服务会被重建">应用</button>
+      <button type="button" class="btn ghost" data-close-modal="1">关闭</button>
     </div>
   </div>
 </div>

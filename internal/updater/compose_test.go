@@ -203,6 +203,45 @@ func TestComposeScriptSyntax(t *testing.T) {
 	}
 }
 
+// 「应用」脚本只做两件事：预检配置、对整项目 up -d，不碰项目文件。
+func TestComposeApplyScript(t *testing.T) {
+	script := detectCompose(composeInspect()).composeApplyScript()
+
+	for _, want := range []string{
+		"--project-directory '" + composeCwd + "'",
+		"-p 'openlist'",
+		"-f '" + composeFile + "'",
+		"config --quiet",
+		"exit " + strconv.Itoa(composeFallbackExit),
+		"exit 21",
+		"up -d --no-color\n",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("脚本缺少 %q:\n%s", want, script)
+		}
+	}
+	if strings.Index(script, "config --quiet") > strings.Index(script, "up -d") {
+		t.Fatalf("compose 预检应当排在 up 之前:\n%s", script)
+	}
+	if strings.Contains(script, "cat >") || strings.Contains(script, "sed -i") {
+		t.Fatalf("应用脚本不该写任何文件:\n%s", script)
+	}
+	// 应用是对整个项目，不能带单个服务名，否则其余服务的配置改动不会生效
+	if strings.Contains(script, "up -d --no-color '") {
+		t.Fatalf("up 不应限定服务:\n%s", script)
+	}
+
+	if sh, err := exec.LookPath("sh"); err == nil {
+		file := filepath.Join(t.TempDir(), "apply.sh")
+		if werr := os.WriteFile(file, []byte(script), 0o600); werr != nil {
+			t.Fatal(werr)
+		}
+		if out, serr := exec.Command(sh, "-n", file).CombinedOutput(); serr != nil {
+			t.Fatalf("生成的脚本语法不过（%v）：%s\n%s", serr, out, script)
+		}
+	}
+}
+
 // 路径里带单引号（1Panel 不会，用户自己建的目录会）也不能把命令拆断。
 func TestComposeScriptQuotes(t *testing.T) {
 	insp := composeInspect()

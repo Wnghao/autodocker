@@ -14,7 +14,7 @@ import (
 // ErrNotFound 记录不存在。
 var ErrNotFound = errors.New("记录不存在")
 
-const imageCols = `id, reference, container_id, container_name, origin, image_id, size_bytes,
+const imageCols = `id, reference, container_id, container_name, compose_project, compose_service, origin, image_id, size_bytes,
 	image_created, dangling, local_digest, remote_digest,
 	local_tag, latest_tag, aliases, mode, mode_override, ignored, ignored_digest, status,
 	baseline_at, last_checked_at, last_error, hook_spec, created_at, updated_at`
@@ -36,6 +36,7 @@ func scanImage(sc rowScanner) (model.Image, error) {
 	)
 	err := sc.Scan(
 		&img.ID, &img.Reference, &img.ContainerID, &img.ContainerName,
+		&img.ComposeProject, &img.ComposeService,
 		&img.Origin, &img.ImageID, &img.SizeBytes, &img.ImageCreated, &dangling,
 		&img.LocalDigest, &img.RemoteDigest, &img.LocalTag, &img.LatestTag,
 		&aliasesJSON, &img.Mode, &modeOverride, &ignored, &img.IgnoredDigest, &img.Status,
@@ -109,13 +110,15 @@ func (s *Store) UpsertImage(img *model.Image) (int64, error) {
 	var id int64
 	err = s.db.QueryRow(`
 		INSERT INTO images(
-			reference, container_id, container_name, origin, image_id, size_bytes,
+			reference, container_id, container_name, compose_project, compose_service, origin, image_id, size_bytes,
 			image_created, dangling, local_digest, remote_digest,
 			local_tag, latest_tag, aliases, mode, mode_override, ignored, ignored_digest, status,
 			baseline_at, last_checked_at, last_error, hook_spec, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(reference, container_id) DO UPDATE SET
 			container_name  = excluded.container_name,
+			compose_project = excluded.compose_project,
+			compose_service = excluded.compose_service,
 			origin          = excluded.origin,
 			image_id        = excluded.image_id,
 			size_bytes      = excluded.size_bytes,
@@ -129,7 +132,7 @@ func (s *Store) UpsertImage(img *model.Image) (int64, error) {
 			updated_at      = excluded.updated_at,
 			mode            = CASE WHEN images.mode_override = 1 THEN images.mode ELSE excluded.mode END
 		RETURNING id`,
-		img.Reference, img.ContainerID, img.ContainerName, string(img.Origin), img.ImageID,
+		img.Reference, img.ContainerID, img.ContainerName, img.ComposeProject, img.ComposeService, string(img.Origin), img.ImageID,
 		img.SizeBytes, img.ImageCreated, b2i(img.Dangling), img.LocalDigest, img.RemoteDigest,
 		img.LocalTag, img.LatestTag, string(aliases), img.Mode, b2i(img.ModeOverride), b2i(img.Ignored),
 		img.IgnoredDigest, img.Status,

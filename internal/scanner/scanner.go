@@ -615,6 +615,22 @@ func (s *Scanner) findNewerTags(ctx context.Context, ref registry.Reference) (la
 	return newer[0], aliases, true
 }
 
+// composeOwnership 从容器标签还原 compose 项目坐标，只用于页面分组。
+//
+// 与更新路径的判据保持一致：`compose run` 的一次性容器没有可重建的服务，
+// 算进项目分组只会让组里的服务数量对不上，直接当普通容器。
+func composeOwnership(labels map[string]string) (project, service string) {
+	if strings.TrimSpace(labels["com.docker.compose.oneoff"]) == "True" {
+		return "", ""
+	}
+	project = strings.TrimSpace(labels["com.docker.compose.project"])
+	service = strings.TrimSpace(labels["com.docker.compose.service"])
+	if project == "" || service == "" {
+		return "", ""
+	}
+	return project, service
+}
+
 // upsertImage 把容器观测值落库（保留用户侧设定与基线）。
 func (s *Scanner) upsertImage(existing *model.Image, c dockerx.Container, ref registry.Reference, status model.Status) *model.Image {
 	img := &model.Image{
@@ -627,6 +643,7 @@ func (s *Scanner) upsertImage(existing *model.Image, c dockerx.Container, ref re
 		Status:        status,
 		Mode:          model.ModeAuto,
 	}
+	img.ComposeProject, img.ComposeService = composeOwnership(c.Labels)
 	if existing != nil {
 		img.ID = existing.ID
 		img.BaselineAt = existing.BaselineAt

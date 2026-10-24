@@ -68,7 +68,7 @@ services:
       - SELF_CONTAINER=autodocker
 ```
 
-`ADMIN_PASSWORD` 与全部通知凭据（`FEISHU_*` / `TELEGRAM_*`）默认留空：不设密码即不启用登录，
+`ADMIN_PASSWORD` 与全部通知凭据（`FEISHU_*` / `TELEGRAM_*` / `WEBHOOK_*`）默认留空：不设密码即不启用登录，
 不填凭据就不推通知。在网页「设置」里补齐即可，环境变量只作首次启动的初值，数据库里的值优先。
 
 首次启动会扫描一次，并自动把本机所有带 tag 的镜像纳入监控。
@@ -103,13 +103,16 @@ docker compose up -d --build
 | `ADMIN_USER` | 登录用户名，默认 `admin` |
 | `SELF_CONTAINER` | 自己的容器名，用于阻止「更新自己」。默认 `autodocker`，改了容器名要同步改这里 |
 | `SCAN_INTERVAL` | 巡检间隔秒数，最小 30，`0` 表示只在手动点击时扫描 |
-| `NOTIFY_CHANNEL` | 用哪个通知渠道：`feishu` 或 `telegram`。同上，作为首次启动的初值，之后在网页里选 |
+| `NOTIFY_CHANNEL` | 用哪个通知渠道：`feishu` / `telegram` / `webhook`。同上，作为首次启动的初值，之后在网页里选 |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 飞书自建应用凭据。作为**首次启动的初值**，之后在网页「设置」里维护，数据库里的值优先 |
 | `FEISHU_CHAT_ID` | 接收通知的群 ID，同上 |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot 凭据（`@BotFather` 给的 `数字:字母` 串），同上 |
 | `TELEGRAM_CHAT_ID` | 接收消息的会话 ID。群与频道为负数；也可在设置页点「读取会话」自动填 |
 | `TELEGRAM_API_BASE` | Telegram API 地址，留空用 `https://api.telegram.org`。直连不通时填自建反代 |
 | `TELEGRAM_PROXY` | HTTP 代理，形如 `http://192.168.1.2:7890`。走代理上外网时填，留空直连 |
+| `WEBHOOK_URL` | Webhook 接收地址，典型是飞书群机器人 `https://open.feishu.cn/open-apis/bot/v2/hook/…`。同上，首次启动初值 |
+| `WEBHOOK_SECRET` | 飞书群机器人「签名校验」密钥；没开就留空 |
+| `WEBHOOK_FORMAT` | `auto`（默认）/ `feishu` / `generic`。按地址认不出来时手动指定 |
 | `AUTO_UPDATE` | 发现即自动更新（无人值守）。默认关闭，即「发现 → 通知 → 等人确认」 |
 | `WATCH` | 额外监控本机没有运行的镜像，逗号分隔，例如 `nginx:1.25,redis:7.2` |
 | `ROLLBACK_ON_FAILURE` | 更新失败是否自动回滚，默认 `true` |
@@ -120,11 +123,14 @@ docker compose up -d --build
 | `REGISTRY_INSECURE` | 允许 http 明文注册表。`127.0.0.1` / `localhost` / `::1` 这类回环地址**不需要打开它**，会自动走 http（与 Docker 守护进程的默认规则一致）；打开后则是**所有**源都改用 http，Docker Hub 与公共加速站会因此整片失败，只在必要时刻临时开 |
 | `HOOK_IMAGE` | 「脚本检测」用的辅助容器镜像，供本机自建、仓库里比不了版本的镜像调用项目自带的 `update.sh`。默认空 = 必须在那份 JSON 里逐条写 `image`。这个镜像要同时有 bash、curl、docker、compose、git、python3，现成的 `docker:*-cli` 只满足其中一条，用 `tools/hook-runner/Dockerfile` 自己构建一个 |
 | `STATIC_DIR` | 指向 `web/` 目录以覆盖内嵌前端，改前端时免重新编译 |
+| `COMPOSE_HOST_ROOT` | compose 文件所在的宿主机根目录，默认 `/opt/1panel`。只有这个目录下的项目文件能在页面上查看 / 编辑 |
+| `COMPOSE_MOUNT_ROOT` | 上面那个目录在面板容器里的挂载点，默认 `/host/1panel`。需与 `volumes` 里那条挂载对应，否则页面提示未挂载 |
 
 ## 关于容器本身
 
-- 挂载两处：`/var/run/docker.sock`（必需，监控与重建靠它）与 `/data`（SQLite 数据库，
-  不挂载的话重建容器后配置会丢）。
+- 挂载三处：`/var/run/docker.sock`（必需，监控与重建靠它）、`/data`（SQLite 数据库，
+  不挂载的话重建容器后配置会丢）与宿主机 compose 根目录（可选，页面直接查看/编辑
+  compose 文件用；103 上是 `- /opt/1panel:/host/1panel`）。
 - 容器以 root 运行，自带 `HEALTHCHECK`。
 - 镜像里只有二进制、`ca-certificates` 与 `tzdata`，前端已编进二进制。
 

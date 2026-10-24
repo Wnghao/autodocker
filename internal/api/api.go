@@ -127,6 +127,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/scan", s.handleScan)
 	mux.HandleFunc("GET /api/scans", s.handleScans)
 
+	// compose 项目文件：只读容器标签里列出的那几份，路径必须落在挂载的宿主机目录内
+	mux.HandleFunc("GET /api/compose", s.handleComposeView)
+	mux.HandleFunc("PUT /api/compose/file", s.handleComposeSave)
+	mux.HandleFunc("POST /api/compose/apply", s.handleComposeApply)
+
 	mux.HandleFunc("GET /api/notifications", s.handleListNotifications)
 	mux.HandleFunc("POST /api/notifications/{id}/read", s.handleReadNotification)
 	mux.HandleFunc("POST /api/notifications/read-all", s.handleReadAll)
@@ -142,6 +147,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/feishu/test", s.handleFeishuTest)
 	// 飞书链路状态：长连接是否就绪、服务启动以来收没收到过按钮回调
 	mux.HandleFunc("GET /api/feishu/status", s.handleFeishuStatus)
+
+	mux.HandleFunc("POST /api/webhook/test", s.handleWebhookTest)
 
 	mux.HandleFunc("POST /api/telegram/test", s.handleTelegramTest)
 	// 只验网络与 Token：不要求 chat_id，用来区分「连不上」和「没配会话」

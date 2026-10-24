@@ -454,6 +454,58 @@ main { padding: 20px 24px 48px; }
 /* 操作列平时压暗，鼠标移到这一行才完全显形 —— 一屏十几个按钮太吵 */
 .row:hover .actions .btn { opacity: 1; }
 
+/* compose 项目分组：组头是一整行按钮，点一下折叠组内服务。
+   展开的组头用强调色左边条 + 渐变底，和组内的容器行拉开层级；
+   收起后退回中性底色，一眼能看出哪些组还开着。 */
+.group-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 16px 8px 13px;
+  font-family: inherit;
+  text-align: left;
+  color: var(--text-sub);
+  background: linear-gradient(90deg, var(--accent-soft), var(--surface-2) 62%);
+  border: 0;
+  border-left: 3px solid var(--accent);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.group-row:hover { background: linear-gradient(90deg, var(--accent-soft), var(--surface-hover) 62%); }
+.group-row.collapsed {
+  background: var(--surface-2);
+  border-left-color: var(--border-strong);
+}
+.group-row.collapsed:hover { background: var(--surface-hover); }
+.group-row.static { cursor: default; background: var(--surface-2); border-left-color: transparent; }
+.group-row.static:hover { background: var(--surface-2); }
+.group-caret {
+  width: 12px;
+  font-size: 10px;
+  color: var(--text-dim);
+  transition: transform .16s ease;
+}
+.group-row:not(.collapsed):not(.static) .group-caret { color: var(--accent); }
+.group-row.collapsed .group-caret { transform: rotate(-90deg); }
+.group-name { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.group-row.collapsed .group-name { color: var(--text-sub); }
+.group-count { font-size: 11.5px; color: var(--text-sub); }
+.group-badge {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.group-row.collapsed .group-badge { color: var(--text-sub); background: var(--muted-soft); }
+.row.in-group {
+  padding-left: 28px;
+  box-shadow: inset 3px 0 0 var(--accent-line);
+}
+.row.in-group:hover { box-shadow: inset 3px 0 0 var(--accent); }
+
 .cell { min-width: 0; }
 .cell.grow { flex: 1 1 auto; }
 .cell.narrow { flex: 0 0 56px; }
@@ -559,6 +611,37 @@ main { padding: 20px 24px 48px; }
   vertical-align: middle;
 }
 
+/* compose 入口：这颗胶囊点开是项目自己的配置文件。用中性色，
+   和「打开」「脚本」区分开 —— 它既不是跳转，也不是更新路径。 */
+.tag-compose {
+  appearance: none;
+  padding: 1px 7px;
+  margin-left: 4px;
+  font-family: inherit;
+  font-size: 11px;
+  border-radius: 999px;
+  color: var(--text-sub);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+  vertical-align: middle;
+  transition: color .16s ease, border-color .16s ease, background .16s ease;
+}
+.tag-compose:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.tag-compose:focus-visible { outline: none; box-shadow: var(--ring); }
+
+.compose-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-sub);
+  min-height: 22px;
+}
+.compose-meta .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#compose-content { min-height: 320px; }
+
 .clean-preview {
   margin-top: 14px;
   max-height: 220px;
@@ -598,12 +681,23 @@ main { padding: 20px 24px 48px; }
 .cell-sub { font-size: 11.5px; color: var(--text-sub); }
 
 /* 容器名本身就是它的访问入口：点开一个新标签页。
-   刻意不写成链接蓝 —— 这一列首先是「哪个容器」，要能被当成名字扫读；
-   可点这件事交给悬浮时的下划线和箭头。 */
+   名字不写成链接蓝 —— 这一列首先是「哪个容器」，要能被当成名字扫读；
+   可点这件事交给名字后面常亮的「打开」小胶囊。 */
 .cell-main .jump { color: inherit; text-decoration: none; }
-.cell-main .jump::after { content: "↗"; margin-left: 5px; font-size: 11px; color: var(--text-dim); }
-.cell-main .jump:hover { color: var(--accent); text-decoration: underline; }
-.cell-main .jump:hover::after { color: var(--accent); }
+.cell-main .jump:hover { color: var(--accent); }
+.jump-pill {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  font-size: 11px;
+  line-height: 1.5;
+  border-radius: 999px;
+  vertical-align: middle;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+}
+.cell-main .jump:hover .jump-pill { color: var(--accent-ink); background: var(--accent); }
 
 /* 「可用」列没有版本号可写时的说明文字（同一个 tag 被重推了内容）。
    用弱化色，跟真正的版本号区分开，一眼能看出这不是个 tag 名。 */
@@ -668,7 +762,8 @@ main { padding: 20px 24px 48px; }
 .field label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
 .field input[type="text"],
 .field input[type="password"],
-.field input[type="number"] {
+.field input[type="number"],
+.field select {
   width: 100%;
   font-family: inherit;
   font-size: 13px;
@@ -681,7 +776,10 @@ main { padding: 20px 24px 48px; }
   transition: border-color .18s ease, box-shadow .18s ease;
 }
 .field input::placeholder { color: var(--text-dim); }
-.field input:focus { border-color: var(--accent); box-shadow: var(--ring); }
+.field input:focus,
+.field select:focus { border-color: var(--accent); box-shadow: var(--ring); }
+/* <option> 由系统控件渲染，深色主题下要显式给底色，否则部分平台是黑字黑底。 */
+.field select option { background: var(--surface-solid); color: var(--text); }
 .field-hint { margin: 5px 0 0; font-size: 11.5px; color: var(--text-sub); line-height: 1.65; }
 
 /* 输入框旁挂一个小按钮（「读取会话」这种先查再填的操作）。

@@ -13,6 +13,7 @@ import (
 	"github.com/haihaipypy/autodocker/internal/dockerx"
 	"github.com/haihaipypy/autodocker/internal/model"
 	"github.com/haihaipypy/autodocker/internal/notify/telegram"
+	"github.com/haihaipypy/autodocker/internal/notify/webhook"
 	"github.com/haihaipypy/autodocker/internal/registry"
 	"github.com/haihaipypy/autodocker/internal/scanner"
 	"github.com/haihaipypy/autodocker/internal/store"
@@ -505,8 +506,6 @@ type hookBodyReq struct {
 
 // handleSetImageHook 写入或清除一个监控项的脚本配置。
 //
-// 安全门只设在这一处：hook 等于让页面填写者在这台机器上执行命令，
-// 所以没设访问密码（匿名可写）的服务一律拒绝。
 // 结构约束交给 model.ValidateHook，不在 handler 里重复判一遍。
 func (s *Server) handleSetImageHook(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r, "id")
@@ -524,10 +523,6 @@ func (s *Server) handleSetImageHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if in.Hook != nil {
-		if !s.AuthEnabled() {
-			writeErr(w, http.StatusForbidden, "执行更新脚本属于高危操作，请先在设置页启用访问密码")
-			return
-		}
 		if err := model.ValidateHook(in.Hook, s.cfg.HookImage); err != nil {
 			writeErr(w, http.StatusBadRequest, "脚本配置有误: "+err.Error())
 			return
@@ -868,6 +863,16 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "健康检查等待时间需在 0-600 秒之间")
 		return
 	}
+	if u := strings.TrimSpace(in.WebhookURL); u != "" && !webhook.ValidURL(u) {
+		writeErr(w, http.StatusBadRequest, "Webhook 地址需要是 http(s):// 开头的完整地址")
+		return
+	}
+	switch in.WebhookFormat {
+	case "", webhook.FormatAuto, webhook.FormatFeishu, webhook.FormatGeneric:
+	default:
+		writeErr(w, http.StatusBadRequest, "Webhook 消息格式只能是 auto / feishu / generic")
+		return
+	}
 	if err := s.saveSettings(in); err != nil {
 		writeErr(w, http.StatusInternalServerError, "保存设置失败: "+err.Error())
 		return
@@ -878,6 +883,16 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFeishuTest(w http.ResponseWriter, r *http.Request) {
 	if err := s.nt.SendTestCard(r.Context()); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeOK(w, map[string]any{"result": "sent"})
+}
+
+// handleWebhookTest 往配置的 webhook 发一条测试消息。
+// 这个渠道只能发不能收，因此没有「等按钮回调」那一步。
+func (s *Server) handleWebhookTest(w http.ResponseWriter, r *http.Request) {
+	if err := s.nt.SendTestWebhook(r.Context()); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1083,6 +1098,9 @@ func (s *Server) LoadSettings() model.Settings {
 		TelegramChatID:    s.cfg.TelegramChatID,
 		TelegramAPIBase:   s.cfg.TelegramAPIBase,
 		TelegramProxy:     s.cfg.TelegramProxy,
+		WebhookURL:        s.cfg.WebhookURL,
+		WebhookSecret:     s.cfg.WebhookSecret,
+		WebhookFormat:     s.cfg.WebhookFormat,
 		AdminUser:         authUser,
 		AdminPassword:     authPass,
 	}
@@ -1145,5 +1163,10 @@ func (s *Server) ApplySettings(in model.Settings) {
 		ChatID:  in.TelegramChatID,
 		APIBase: in.TelegramAPIBase,
 		Proxy:   in.TelegramProxy,
+	})
+	s.nt.ApplyWebhook(webhook.Config{
+		URL:    in.WebhookURL,
+		Secret: in.WebhookSecret,
+		Format: in.WebhookFormat,
 	})
 }

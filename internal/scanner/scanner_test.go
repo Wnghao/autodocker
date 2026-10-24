@@ -98,3 +98,51 @@ func TestNotifySuppressesOnlyIgnoredDigest(t *testing.T) {
 		t.Error("远端内容已变化时应重新推送通知")
 	}
 }
+
+// 分组只看 compose 自己写的项目/服务标签；一次性容器（compose run）
+// 没有可重建的服务，不能算进任何项目，否则组内服务数对不上。
+func TestComposeOwnership(t *testing.T) {
+	cases := []struct {
+		name    string
+		labels  map[string]string
+		project string
+		service string
+	}{
+		{
+			name: "正常 compose 容器",
+			labels: map[string]string{
+				"com.docker.compose.project": "openlist",
+				"com.docker.compose.service": "openlist",
+				"com.docker.compose.oneoff":  "False",
+			},
+			project: "openlist",
+			service: "openlist",
+		},
+		{
+			name: "compose run 的一次性容器",
+			labels: map[string]string{
+				"com.docker.compose.project": "openlist",
+				"com.docker.compose.service": "openlist",
+				"com.docker.compose.oneoff":  "True",
+			},
+		},
+		{
+			name:   "普通 docker run 容器",
+			labels: map[string]string{},
+		},
+		{
+			name: "只有项目没有服务",
+			labels: map[string]string{
+				"com.docker.compose.project": "openlist",
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			project, service := composeOwnership(c.labels)
+			if project != c.project || service != c.service {
+				t.Errorf("应得到 %q/%q，实际 %q/%q", c.project, c.service, project, service)
+			}
+		})
+	}
+}

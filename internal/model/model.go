@@ -53,23 +53,27 @@ const (
 
 // Image 一个被监控的对象：可能是容器维度，也可能是镜像维度，见 ImageOrigin。
 type Image struct {
-	ID            int64       `json:"id"`
-	Reference     string      `json:"reference"`      // 如 nginx:latest、ghcr.io/foo/bar:1.2.3
-	ContainerID   string      `json:"container_id"`   // 关联的本地容器，非容器来源为空
-	ContainerName string      `json:"container_name"` // 去掉前导 /
-	Origin        ImageOrigin `json:"origin"`
-	ImageID       string      `json:"image_id"`      // 本机镜像 ID（sha256:…），纯远端为空
-	SizeBytes     int64       `json:"size_bytes"`    // 镜像占用字节，纯远端为 0
-	ImageCreated  int64       `json:"image_created"` // 镜像构建时间（unix 秒）
-	Dangling      bool        `json:"dangling"`      // 无 tag 的悬空镜像，无法比对版本
-	LocalDigest   string      `json:"local_digest"`
-	RemoteDigest  string      `json:"remote_digest"`
-	LocalTag      string      `json:"local_tag"`
-	LatestTag     string      `json:"latest_tag"` // 仓库中可用的更高版本 tag
-	Aliases       []string    `json:"aliases"`    // 同 digest 的别名 tag
-	Mode          DetectMode  `json:"mode"`
-	ModeOverride  bool        `json:"mode_override"`
-	Ignored       bool        `json:"ignored"`
+	ID            int64  `json:"id"`
+	Reference     string `json:"reference"`      // 如 nginx:latest、ghcr.io/foo/bar:1.2.3
+	ContainerID   string `json:"container_id"`   // 关联的本地容器，非容器来源为空
+	ContainerName string `json:"container_name"` // 去掉前导 /
+	// ComposeProject / ComposeService 来自容器标签，供页面按项目分组。
+	// 不是 compose 起的容器、以及 `compose run` 的一次性容器都为空。
+	ComposeProject string      `json:"compose_project,omitempty"`
+	ComposeService string      `json:"compose_service,omitempty"`
+	Origin         ImageOrigin `json:"origin"`
+	ImageID        string      `json:"image_id"`      // 本机镜像 ID（sha256:…），纯远端为空
+	SizeBytes      int64       `json:"size_bytes"`    // 镜像占用字节，纯远端为 0
+	ImageCreated   int64       `json:"image_created"` // 镜像构建时间（unix 秒）
+	Dangling       bool        `json:"dangling"`      // 无 tag 的悬空镜像，无法比对版本
+	LocalDigest    string      `json:"local_digest"`
+	RemoteDigest   string      `json:"remote_digest"`
+	LocalTag       string      `json:"local_tag"`
+	LatestTag      string      `json:"latest_tag"` // 仓库中可用的更高版本 tag
+	Aliases        []string    `json:"aliases"`    // 同 digest 的别名 tag
+	Mode           DetectMode  `json:"mode"`
+	ModeOverride   bool        `json:"mode_override"`
+	Ignored        bool        `json:"ignored"`
 	// IgnoredDigest 记录用户点「忽略本版本」时看到的那个远端摘要。
 	//
 	// 它与 Ignored 是两种粒度：Ignored 是「这个监控项我整个不要了」，
@@ -227,11 +231,12 @@ type Channel string
 const (
 	ChannelFeishu   Channel = "feishu"
 	ChannelTelegram Channel = "telegram"
+	ChannelWebhook  Channel = "webhook"
 )
 
 // Valid 是否是已实现的渠道。
 func (c Channel) Valid() bool {
-	return c == ChannelFeishu || c == ChannelTelegram
+	return c == ChannelFeishu || c == ChannelTelegram || c == ChannelWebhook
 }
 
 // CardState 卡片/消息上承载的交互状态。
@@ -342,7 +347,7 @@ type Settings struct {
 	RegistryMirror    string `json:"registry_mirror"`
 	RegistryInsecure  bool   `json:"registry_insecure"`
 
-	// 通知渠道（单选）：feishu / telegram。留空按「谁配好了就用谁」自动判定。
+	// 通知渠道（单选）：feishu / telegram / webhook。留空按「谁配好了就用谁」自动判定。
 	NotifyChannel string `json:"notify_channel"`
 
 	// 飞书凭据放在设置里而不是只在环境变量里：应用装好后用户直接进页面填，
@@ -358,6 +363,13 @@ type Settings struct {
 	TelegramChatID   string `json:"telegram_chat_id"`
 	TelegramAPIBase  string `json:"telegram_api_base"`
 	TelegramProxy    string `json:"telegram_proxy"`
+
+	// Webhook：任意能接收 JSON POST 的地址，典型是飞书群机器人。
+	// 只能单向推送 —— 想让提醒上带「立即更新」按钮，还是得用上面两个渠道。
+	// Format 留空/auto 时按地址识别，Secret 只在飞书签名校验时使用。
+	WebhookURL    string `json:"webhook_url"`
+	WebhookSecret string `json:"webhook_secret"`
+	WebhookFormat string `json:"webhook_format"`
 
 	// 访问密码同样放在设置里：默认留空即不启用登录。
 	// 本应用能重建任意容器（等同于系统最高权限），只在确实需要时开。

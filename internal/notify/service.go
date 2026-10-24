@@ -21,6 +21,7 @@ import (
 	"github.com/haihaipypy/autodocker/internal/model"
 	"github.com/haihaipypy/autodocker/internal/notify/feishu"
 	"github.com/haihaipypy/autodocker/internal/notify/telegram"
+	"github.com/haihaipypy/autodocker/internal/notify/webhook"
 	"github.com/haihaipypy/autodocker/internal/registry"
 	"github.com/haihaipypy/autodocker/internal/store"
 	"github.com/haihaipypy/autodocker/internal/updater"
@@ -63,6 +64,7 @@ type Service struct {
 	lc  *feishu.LongConnManager
 	tg  *telegram.Client
 	tp  *telegram.PollManager
+	wh  *webhook.Client
 	st  *store.Store
 	up  *updater.Updater
 	log *slog.Logger
@@ -88,6 +90,7 @@ func New(ctx context.Context, fs *feishu.Client, st *store.Store, up *updater.Up
 	svc := &Service{
 		fs:      fs,
 		tg:      telegram.New(telegram.Config{}),
+		wh:      webhook.New(webhook.Config{}),
 		st:      st,
 		up:      up,
 		log:     logger,
@@ -132,6 +135,11 @@ func (s *Service) EffectiveChannel() model.Channel {
 			return model.ChannelTelegram
 		}
 		return ""
+	case model.ChannelWebhook:
+		if s.wh.Configured() {
+			return model.ChannelWebhook
+		}
+		return ""
 	}
 	// 未指定：保持历史行为，飞书优先
 	if s.fs.Configured() {
@@ -139,6 +147,9 @@ func (s *Service) EffectiveChannel() model.Channel {
 	}
 	if s.tg.Configured() {
 		return model.ChannelTelegram
+	}
+	if s.wh.Configured() {
+		return model.ChannelWebhook
 	}
 	return ""
 }
@@ -169,6 +180,11 @@ func (s *Service) ApplyFeishu(appID, appSecret, chatID string) {
 func (s *Service) ApplyTelegram(cfg telegram.Config) {
 	s.tg.SetOptions(cfg)
 	s.tp.Ensure(cfg)
+}
+
+// ApplyWebhook 应用一份 webhook 配置。地址留空即关闭这个渠道。
+func (s *Service) ApplyWebhook(cfg webhook.Config) {
+	s.wh.SetOptions(cfg)
 }
 
 // LongConnRunning 返回飞书卡片回调长连接是否已就绪。
@@ -216,6 +232,17 @@ func (s *Service) ChannelStatuses() []ChannelStatus {
 			Error:      errText,
 		})
 	}
+	if s.wh.Configured() {
+		// webhook 没有长连接可看：只要地址写了、最近一次发送没报错，
+		// 就认为这条链路可用；失败原因会一直挂到下一次成功发送为止。
+		errText := s.wh.LastError()
+		out = append(out, ChannelStatus{
+			Name:       "Webhook",
+			Configured: true,
+			Online:     errText == "",
+			Error:      errText,
+		})
+	}
 	return out
 }
 
@@ -254,12 +281,15 @@ func (s *Service) CallbackState() (at time.Time, action string, ch model.Channel
 // 判 chat_id 而不是只看 Configured：应用凭据填完长连接就绿了，
 // 看着像配好了，实际一条消息也发不到任何地方。
 func (s *Service) readyChannels() []model.Channel {
-	out := make([]model.Channel, 0, 2)
+	out := make([]model.Channel, 0, 3)
 	if s.fs.Configured() && s.fs.DefaultChatID() != "" {
 		out = append(out, model.ChannelFeishu)
 	}
 	if s.tg.Configured() && s.tg.DefaultChatID() != "" {
 		out = append(out, model.ChannelTelegram)
+	}
+	if s.wh.Configured() {
+		out = append(out, model.ChannelWebhook)
 	}
 	return out
 }
@@ -312,6 +342,20 @@ func (s *Service) Notify(ctx context.Context, n *model.Notification) (string, er
 				MessageID: msgID,
 			})
 			s.log.Info("已推送更新提醒", "channel", "feishu", "ref", n.ImageRef, "message_id", msgID)
+
+		case model.ChannelWebhook:
+			if err := s.wh.Send(ctx, webhook.BuildUpdateMessage(n)); err != nil {
+				failures = append(failures, "Webhook："+err.Error())
+				s.log.Warn("Webhook 推送失败", "ref", n.ImageRef, "err", err)
+				continue
+			}
+			// webhook 不给消息 ID，也改不了已发出的消息；
+			// 投递记录留个主机名，至少看得出这条提醒推到了哪个接收端。
+			deliveries = append(deliveries, model.Delivery{
+				Channel: model.ChannelWebhook,
+				ChatRef: s.wh.Host(),
+			})
+			s.log.Info("已推送更新提醒", "channel", "webhook", "ref", n.ImageRef, "host", s.wh.Host())
 		}
 	}
 
@@ -648,8 +692,19 @@ func (s *Service) deliveryTargets(n *model.Notification) []model.Delivery {
 }
 
 // editDelivery 把某个渠道上那张卡片/消息改成最终状态。
+//
+// webhook 是唯一改不了旧消息的渠道：它只能再发一条结果，因此这里的分支
+// 对它是「补发」而不是「改写」。
 func (s *Service) editDelivery(ctx context.Context, n *model.Notification, d model.Delivery, state model.CardState, detail string) {
 	switch d.Channel {
+	case model.ChannelWebhook:
+		if !s.wh.Configured() {
+			return
+		}
+		if err := s.wh.Send(ctx, webhook.BuildStateMessage(n, state, detail)); err != nil {
+			s.log.Warn("推送 Webhook 更新结果失败", "err", err)
+		}
+
 	case model.ChannelTelegram:
 		if !s.tg.Configured() {
 			return
@@ -712,4 +767,14 @@ func (s *Service) SendTestTelegram(ctx context.Context) error {
 	}
 	_, err := s.tg.SendMessage(ctx, chatID, telegram.BuildTestMessage(chatID))
 	return err
+}
+
+// SendTestWebhook 向配置的 webhook 发一条测试消息。
+//
+// webhook 没有回调链路，发得出去就是全部结论；设置页也不需要等按钮。
+func (s *Service) SendTestWebhook(ctx context.Context) error {
+	if !s.wh.Configured() {
+		return errors.New("尚未填写 Webhook 地址")
+	}
+	return s.wh.Send(ctx, webhook.BuildTestMessage(s.wh.Config()))
 }

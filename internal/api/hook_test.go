@@ -50,18 +50,17 @@ func putHook(t *testing.T, s *Server, id int64, body string) *httptest.ResponseR
 	return rec
 }
 
-// 脚本型监控项等于把「在这台机器上执行命令」的权力交给页面填写者。
-// 没设访问密码的服务是匿名可写的（飞牛桌面里直接打开就能用），
-// 所以这道门必须挡在落库之前，而不是只在页面上提示一句。
-func TestSetImageHookRequiresAuth(t *testing.T) {
+// 没设访问密码（匿名可写）的服务也允许保存脚本配置：
+// 是否暴露到不可信网络由部署环境自己把关，代码里不再拦。
+func TestSetImageHookSavesWithoutAuth(t *testing.T) {
 	s, st, id := hookTestServer(t, "")
 	rec := putHook(t, s, id, `{"hook":{"enabled":true,"cwd":"/opt/app","check_cmd":"./update.sh --check","update_cmd":"./update.sh"}}`)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("未启用密码时应拒绝，实际 %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("未启用密码时应能保存，实际 %d: %s", rec.Code, rec.Body.String())
 	}
 	img, _ := st.GetImage(id)
-	if img.Hook != nil {
-		t.Fatal("被拒绝的配置不应已经落库")
+	if img.Hook == nil || !img.Hook.Enabled || img.Hook.Cwd != "/opt/app" {
+		t.Fatalf("配置未正确落库: %#v", img.Hook)
 	}
 }
 

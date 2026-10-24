@@ -13,15 +13,20 @@ import (
 	"github.com/haihaipypy/autodocker/internal/model"
 	"github.com/haihaipypy/autodocker/internal/notify/feishu"
 	"github.com/haihaipypy/autodocker/internal/notify/telegram"
+	"github.com/haihaipypy/autodocker/internal/notify/webhook"
 )
 
-// quietService 造一个只带 logger 的 Service，刻意不装配 store / updater / 渠道客户端。
+// quietService 造一个只带 logger 的 Service，刻意不装配 store / updater / 渠道凭据。
+// webhook 客户端是零配置的纯结构体，顺手装上，免得渠道就绪判断碰到 nil。
 //
 // 这是有意为之：测试消息上的回调不关联任何通知，必须在碰数据库**之前**就被受理。
 // 一旦有人把 ActionTest 分支挪到 GetNotification 后面，下面这些测试立刻会因为
 // nil store 而 panic —— 正好把这类回归卡死在提交前。
 func quietService() *Service {
-	return &Service{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	return &Service{
+		wh:  webhook.New(webhook.Config{}),
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
 }
 
 func TestHandleCardActionAcceptsTestCallback(t *testing.T) {
@@ -140,6 +145,45 @@ func TestReadyChannelsIncludesBoth(t *testing.T) {
 	got := s.readyChannels()
 	if len(got) != 2 || got[0] != model.ChannelFeishu || got[1] != model.ChannelTelegram {
 		t.Fatalf("两个渠道都配好时应都就绪（飞书在前），得到 %v", got)
+	}
+}
+
+// 只配了 webhook 时它也要参与广播，并把投递记录写回通知。
+func TestNotifyIncludesWebhookDelivery(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = w.Write([]byte(`{"code":0,"msg":"success"}`))
+	}))
+	defer srv.Close()
+
+	s := quietService()
+	s.fs = feishu.New(feishu.Config{})
+	s.tg = telegram.New(telegram.Config{})
+	s.wh = webhook.New(webhook.Config{URL: srv.URL + "/open-apis/bot/v2/hook/token"})
+
+	n := &model.Notification{
+		ImageRef:      "nginx:latest",
+		ContainerName: "web",
+		Kind:          model.NotifNewVersion,
+		Title:         "web 的镜像有更新",
+		Body:          "远端内容已变更。",
+	}
+	msgID, err := s.Notify(context.Background(), n)
+	if err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+	if msgID != "" {
+		t.Fatalf("webhook 没有消息 ID，得到 %q", msgID)
+	}
+	if hits != 1 {
+		t.Fatalf("接收端应收到 1 次请求，得到 %d", hits)
+	}
+	if len(n.Deliveries) != 1 || n.Deliveries[0].Channel != model.ChannelWebhook {
+		t.Fatalf("投递记录 = %+v", n.Deliveries)
+	}
+	if n.Channel != model.ChannelWebhook || n.Deliveries[0].ChatRef == "" {
+		t.Fatalf("主投递与落点没记对: channel=%q deliveries=%+v", n.Channel, n.Deliveries)
 	}
 }
 

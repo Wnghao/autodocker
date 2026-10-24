@@ -16,6 +16,9 @@ const state = {
   imageSearch: '',
   // 镜像页勾选的镜像 ID。清理是批量操作，靠它决定删哪些。
   picked: new Set(),
+  // 容器页折叠起来的 compose 项目。只记在内存里：刷新后回到全展开，
+  // 免得某次收起后过几天打开页面只看到一排项目名，以为容器都没了。
+  collapsedProjects: new Set(),
 };
 
 /* ---------- 登录态 ---------- */
@@ -334,62 +337,147 @@ function accessHref(a) {
   return `${a.tls ? 'https' : 'http'}://${location.hostname}:${a.port}/`;
 }
 
-/* 容器列表：一条记录对应一个真实容器，「更新」等于按原配置重建它。 */
+/* 容器列表：一条记录对应一个真实容器，「更新」等于按原配置重建它。
+   compose 起的容器按项目折叠成组，组内仍是一容器一行 —— 同项目的服务
+   镜像与状态各管各的，合成一行就只能报一个聚合状态。 */
 function renderContainers() {
   const kw = state.containerSearch.trim().toLowerCase();
-  const rows = state.containers.filter((img) => {
-    if (!kw) return true;
-    return (img.container_name || '').toLowerCase().includes(kw) ||
-      (img.reference || '').toLowerCase().includes(kw);
-  });
+  const match = (img) => !kw ||
+    (img.container_name || '').toLowerCase().includes(kw) ||
+    (img.reference || '').toLowerCase().includes(kw);
 
-  if (!rows.length) {
+  const groups = new Map();
+  const singles = [];
+  for (const img of state.containers) {
+    const project = img.compose_project || '';
+    if (!project) {
+      if (match(img)) singles.push(img);
+      continue;
+    }
+    let g = groups.get(project);
+    if (!g) {
+      g = { project, rows: [], nameHit: project.toLowerCase().includes(kw) };
+      groups.set(project, g);
+    }
+    g.rows.push(img);
+  }
+
+  // 只有一个容器的项目不做分组：组头 + 一行比裸行更占地方。
+  // 按项目下的真实容器数判断（不受搜索过滤影响），否则搜索会让分组结构跳来跳去。
+  const grouped = [];
+  for (const g of groups.values()) {
+    if (g.rows.length >= 2) grouped.push(g);
+    else if (match(g.rows[0]) || g.nameHit) singles.push(g.rows[0]);
+  }
+
+  syncGroupsToggle(grouped, kw);
+
+  const blocks = [];
+  for (const g of grouped) {
+    const rows = g.nameHit ? g.rows : g.rows.filter(match);
+    if (!rows.length) continue;
+    // 搜项目名时顺手展开：命中了却收着，会让人以为这个项目没有匹配的容器。
+    const open = !!kw || !state.collapsedProjects.has(g.project);
+    const updates = rows.filter((img) =>
+      img.status === 'update_available' || img.status === 'new_version_tag').length;
+    // 数「服务」而不是行：一个服务扩了副本时，行数会多出来，
+    // 但组头说「3 个服务」才是用户认的项目结构。
+    const serviceOf = (img) => img.compose_service || img.container_name || '';
+    const services = new Set(rows.map(serviceOf)).size;
+    const totalServices = new Set(g.rows.map(serviceOf)).size;
+    const count = services === totalServices
+      ? `${services} 个服务`
+      : `${services}/${totalServices} 个服务`;
+    blocks.push(`
+    <button type="button" class="group-row${open ? '' : ' collapsed'}" data-project="${esc(g.project)}" aria-expanded="${open}">
+      <span class="group-caret" aria-hidden="true">▾</span>
+      <span class="group-name mono">${esc(g.project)}</span>
+      <span class="group-count">${count}</span>
+      ${updates ? `<span class="group-badge">${updates} 个有更新</span>` : ''}
+    </button>`);
+    if (open) {
+      blocks.push(rows.map((img) => containerRowHtml(img, true)).join(''));
+    }
+  }
+
+  if (singles.length) {
+    if (blocks.length) {
+      blocks.push(`
+    <div class="group-row static">
+      <span class="group-name">未分组的容器</span>
+      <span class="group-count">${singles.length} 个</span>
+    </div>`);
+    }
+    blocks.push(singles.map((img) => containerRowHtml(img, false)).join(''));
+  }
+
+  if (!blocks.length) {
     $('#containers-body').innerHTML = `<div class="empty">${state.containers.length ? '没有匹配的容器' : '还没有容器。挂载 docker.sock 后扫描一次即可自动发现。'}</div>`;
     return;
   }
+  $('#containers-body').innerHTML = blocks.join('');
+}
 
-  const html = rows.map((img) => {
-    // 「更新」只在该出现的时候出现，不给灰着的占位：
-    // 检测模式是自动判定的，「已是最新」根本没有新镜像可拉，摆一个点不动的按钮
-    // 只会让人反复去点、点完没反应；「未知」「已忽略」同理 —— 前者是这次没查到，
-    // 后者是你自己说了先不动。检测失败的原因已经写在容器名下方的小字里，
-    // 不需要再用一个灰按钮来占位提示。跟镜像页是同一条原则。
-    const canUpdate = !!img.container_id &&
-      (img.status === 'update_available' || img.status === 'new_version_tag');
-    const err = img.status === 'unknown' ? (img.last_error || '') : '';
-    const acked = ackIgnored(img);
-    // 脚本型监控项：这一行的「有没有新版」由项目自带的检查脚本说了算，
-    // 注册表比对与检测模式都不再参与，所以那一格要换成说明文字而不是一个改了没用的下拉框。
-    const isHook = !!(img.hook && img.hook.enabled);
+/* syncGroupsToggle 更新「全部收起 / 全部展开」按钮的文案与可用状态。
+   搜索时分组强制展开，按钮此时操作了也看不到变化，直接禁用。 */
+function syncGroupsToggle(groups, kw) {
+  const btn = $('#btn-groups-toggle');
+  if (!btn) return;
+  const projects = groups.map((g) => g.project);
+  btn.hidden = projects.length === 0;
+  const allCollapsed = projects.length > 0 &&
+    projects.every((p) => state.collapsedProjects.has(p));
+  btn.textContent = allCollapsed ? '全部展开' : '全部收起';
+  btn.disabled = !!kw;
+  btn.title = kw ? '搜索时分组会自动展开，清空搜索后再操作' : '';
+}
 
-    // 「可用」列的含义是「仓库里有没有更高的版本号」，不是「能拉到什么」。
-    // 三种情况要分开写，否则会让人以为没取到数：
-    // · 有更高版本 → 显示那个 tag；
-    // · 没有更高版本但摘要变了（同一个 tag 被作者重推了内容）→ 写一句「内容已更新」。
-    //   这类镜像的 tag 里带的数字是架构而不是版本号（v3-386 / v3-arm64 这种并列发布），
-    //   永远不可能有「更高版本」，点更新拉到的还是同一个 tag，只是它的最新内容；
-    // · 其余（已是最新 / 未知）→ 留横杠。
-    // 脚本型另说：本机自建的镜像本来就没有版本号可比。
-    const avail = isHook
-      ? (img.status === 'update_available'
-        ? `<div class="cell-main hint-text" title="检查脚本（${esc(img.hook.check_cmd)}）报告上游有可用内容；点「更新」执行更新脚本，脚本自带回滚">脚本报告可更新</div>`
-        : '<div class="cell-main hint-text" title="本机自建的镜像不在仓库上，有没有更新由检查脚本判定">脚本判定</div>')
-      : img.latest_tag
-        ? `<div class="cell-main mono">${esc(img.latest_tag)}</div>`
-        : (img.status === 'update_available'
-          ? `<div class="cell-main hint-text" title="仓库里 ${esc(img.reference)} 这个 tag 已被重新推送，点「更新」拉到它的最新内容，版本号不变">内容已更新</div>`
-          : '<div class="cell-main mono">—</div>');
-    // 有多个发布端口时只跳最像「主入口」的那个（后端排好序），其余写在悬浮里。
-    const acc = img.access || [];
-    const name = esc(img.container_name || '—');
-    const main = acc.length
-      ? `<a class="jump" href="${accessHref(acc[0])}" target="_blank" rel="noopener"${
-        acc.length > 1 ? ` title="这个容器还有：${esc(acc.slice(1).map(accessHref).join('、'))}"` : ''}>${name}</a>`
-      : name;
-    return `
-    <div class="row" data-id="${img.id}">
+/* containerRowHtml 渲染一个容器行。inGroup 只影响左侧的归属提示线。 */
+function containerRowHtml(img, inGroup) {
+  // 「更新」只在该出现的时候出现，不给灰着的占位：
+  // 检测模式是自动判定的，「已是最新」根本没有新镜像可拉，摆一个点不动的按钮
+  // 只会让人反复去点、点完没反应；「未知」「已忽略」同理 —— 前者是这次没查到，
+  // 后者是你自己说了先不动。检测失败的原因已经写在容器名下方的小字里，
+  // 不需要再用一个灰按钮来占位提示。跟镜像页是同一条原则。
+  const canUpdate = !!img.container_id &&
+    (img.status === 'update_available' || img.status === 'new_version_tag');
+  const err = img.status === 'unknown' ? (img.last_error || '') : '';
+  const acked = ackIgnored(img);
+  // 脚本型监控项：这一行的「有没有新版」由项目自带的检查脚本说了算，
+  // 注册表比对与检测模式都不再参与，所以那一格要换成说明文字而不是一个改了没用的下拉框。
+  const isHook = !!(img.hook && img.hook.enabled);
+
+  // 「可用」列的含义是「仓库里有没有更高的版本号」，不是「能拉到什么」。
+  // 三种情况要分开写，否则会让人以为没取到数：
+  // · 有更高版本 → 显示那个 tag；
+  // · 没有更高版本但摘要变了（同一个 tag 被作者重推了内容）→ 写一句「内容已更新」。
+  //   这类镜像的 tag 里带的数字是架构而不是版本号（v3-386 / v3-arm64 这种并列发布），
+  //   永远不可能有「更高版本」，点更新拉到的还是同一个 tag，只是它的最新内容；
+  // · 其余（已是最新 / 未知）→ 留横杠。
+  // 脚本型另说：本机自建的镜像本来就没有版本号可比。
+  const avail = isHook
+    ? (img.status === 'update_available'
+      ? `<div class="cell-main hint-text" title="检查脚本（${esc(img.hook.check_cmd)}）报告上游有可用内容；点「更新」执行更新脚本，脚本自带回滚">脚本报告可更新</div>`
+      : '<div class="cell-main hint-text" title="本机自建的镜像不在仓库上，有没有更新由检查脚本判定">脚本判定</div>')
+    : img.latest_tag
+      ? `<div class="cell-main mono">${esc(img.latest_tag)}</div>`
+      : (img.status === 'update_available'
+        ? `<div class="cell-main hint-text" title="仓库里 ${esc(img.reference)} 这个 tag 已被重新推送，点「更新」拉到它的最新内容，版本号不变">内容已更新</div>`
+        : '<div class="cell-main mono">—</div>');
+  // 有多个发布端口时只跳最像「主入口」的那个（后端排好序），其余写在悬浮里。
+  const acc = img.access || [];
+  const name = esc(img.container_name || '—');
+  const main = acc.length
+    ? `<a class="jump" href="${accessHref(acc[0])}" target="_blank" rel="noopener" aria-label="打开 ${name}"${
+      acc.length > 1 ? ` title="这个容器还有：${esc(acc.slice(1).map(accessHref).join('、'))}"` : ''}>${name}<span class="jump-pill">打开</span></a>`
+    : name;
+  return `
+    <div class="row${inGroup ? ' in-group' : ''}" data-id="${img.id}">
       <div class="cell grow">
         <div class="cell-main">${main}${
+          img.compose_project
+            ? ` <button type="button" class="tag-compose" data-act="compose" title="查看 / 编辑项目 ${esc(img.compose_project)} 的 compose 文件">compose</button>`
+            : ''}${
           isHook ? ' <span class="tag-hook" title="检测与更新都走项目自带脚本">脚本</span>' : ''}</div>
         <div class="cell-sub">${esc(img.reference)}</div>
         ${err ? `<div class="cell-err" title="${esc(err)}">${esc(shortErr(err))}</div>` : ''}
@@ -426,9 +514,6 @@ function renderContainers() {
         <button class="btn small ghost danger" data-act="remove">移除</button>
       </div>
     </div>`;
-  }).join('');
-
-  $('#containers-body').innerHTML = html;
 }
 
 /* 镜像列表：本机真实存在的镜像（含没被任何容器使用的），
@@ -591,6 +676,7 @@ function renderNotifications() {
 const CHANNELS = [
   { id: 'feishu', name: '飞书', ready: true },
   { id: 'telegram', name: 'Telegram', ready: true },
+  { id: 'webhook', name: 'Webhook', ready: true },
   { id: 'dingtalk', name: '钉钉', ready: false },
   { id: 'wecom', name: '企业微信', ready: false },
   { id: 'slack', name: 'Slack', ready: false },
@@ -608,8 +694,9 @@ const CHANNELS = [
 function currentChannel() {
   const s = state.settings || {};
   const ch = s.notify_channel;
-  if (ch === 'telegram' || ch === 'feishu') return ch;
+  if (ch === 'telegram' || ch === 'feishu' || ch === 'webhook') return ch;
   if (!s.feishu_app_id && s.telegram_bot_token) return 'telegram';
+  if (!s.feishu_app_id && !s.telegram_bot_token && s.webhook_url) return 'webhook';
   return 'feishu';
 }
 
@@ -617,6 +704,7 @@ function channelConfigured(id) {
   const s = state.settings || {};
   if (id === 'feishu') return !!(s.feishu_app_id && s.feishu_app_secret);
   if (id === 'telegram') return !!s.telegram_bot_token;
+  if (id === 'webhook') return !!s.webhook_url;
   return false;
 }
 
@@ -638,6 +726,9 @@ function stashChannelFields() {
   take('telegram_chat_id', 'telegram_chat_id');
   take('telegram_api_base', 'telegram_api_base');
   take('telegram_proxy', 'telegram_proxy');
+  take('webhook_url', 'webhook_url');
+  take('webhook_secret', 'webhook_secret');
+  take('webhook_format', 'webhook_format');
 }
 
 function channelChipsHtml(ch) {
@@ -648,7 +739,9 @@ function channelChipsHtml(ch) {
         <span class="chip-sub">施工中</span></span>`;
     }
     const active = c.id === ch ? ' active' : '';
-    const sub = channelConfigured(c.id) ? '已填写凭据' : '待配置';
+    const sub = channelConfigured(c.id)
+      ? (c.id === 'webhook' ? '已填写地址' : '已填写凭据')
+      : '待配置';
     return `<button type="button" class="channel-chip${active}" data-channel="${c.id}">
       <span class="chip-name">${esc(c.name)}</span>
       <span class="chip-sub">${sub}</span></button>`;
@@ -714,6 +807,35 @@ function telegramFieldsHtml(s) {
         填完直接点右边「检测连通性」—— 通了会<b>自动保存并生效</b>，不用再点保存。
       </p>
       <div id="tg-check-result" class="chat-pick" hidden></div>
+    </div>`;
+}
+
+function webhookFieldsHtml(s) {
+  const format = s.webhook_format || 'auto';
+  return `
+    <div class="field">
+      <label for="webhook_url">Webhook 地址</label>
+      <input id="webhook_url" name="webhook_url" type="text"
+             value="${esc(s.webhook_url)}" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx">
+      <p class="field-hint">留空即关闭 Webhook 通知。地址通常带着机器人密钥，只保存在本机数据库里。</p>
+    </div>
+    <div class="field">
+      <label for="webhook_format">消息格式</label>
+      <select id="webhook_format" name="webhook_format">
+        <option value="auto"${format === 'auto' ? ' selected' : ''}>自动识别（推荐）</option>
+        <option value="feishu"${format === 'feishu' ? ' selected' : ''}>飞书群机器人</option>
+        <option value="generic"${format === 'generic' ? ' selected' : ''}>通用 JSON</option>
+      </select>
+      <p class="field-hint">
+        按地址自动判断。把飞书地址藏在自己的反向代理后面、路径认不出来时，手动选「飞书群机器人」；
+        「通用 JSON」适合 n8n、自建脚本这类自己的接收端。
+      </p>
+    </div>
+    <div class="field">
+      <label for="webhook_secret">签名密钥（可选）</label>
+      <input id="webhook_secret" name="webhook_secret" type="password"
+             value="${esc(s.webhook_secret)}" placeholder="飞书机器人开了「签名校验」才需要填">
+      <p class="field-hint">飞书群机器人「安全设置」里选了签名校验时，把那里生成的密钥填过来；没开就留空。</p>
     </div>`;
 }
 
@@ -838,11 +960,61 @@ function telegramGuideHtml() {
     </div>`;
 }
 
+function webhookGuideHtml() {
+  const s = state.settings || {};
+  const configured = !!s.webhook_url;
+  const statusText = configured
+    ? '已配置，发现新版本会推送到这个地址'
+    : '未配置，发现新版本只会记录在「通知」标签里';
+  return `
+    <div class="guide-card">
+      <h3>Webhook · 配置流程</h3>
+      <p class="field-hint">
+        webhook 是<b>单向推送</b>：消息发到群里，但上面没有「立即更新」按钮，
+        也收不到点击。更新完成后会再推一条结果消息，操作仍需回面板进行。
+        想要按钮就配上面的飞书自建应用或 Telegram。
+      </p>
+      <p class="field-hint">当前状态：<b>${esc(statusText)}</b></p>
+      <details class="setup-guide" open>
+        <summary>以飞书群机器人为例，共 4 步</summary>
+        <ol class="setup-steps">
+          <li>
+            <b>加机器人</b>：飞书里打开目标群 → 右上角设置 → 群机器人 →
+            添加机器人 → 选<b>「自定义机器人」</b>。
+          </li>
+          <li>
+            <b>复制地址</b>：建好后会给出一个
+            <code>https://open.feishu.cn/open-apis/bot/v2/hook/…</code> 地址，
+            填到左侧「Webhook 地址」。
+          </li>
+          <li>
+            <b>（可选）签名校验</b>：安全设置里如果选了「签名校验」，
+            把生成的密钥填到「签名密钥」；选「自定义关键词」的话，
+            关键词要能在通知正文里出现（比如 <code>AutoDocker</code>）。
+          </li>
+          <li>
+            <b>保存并测试</b>：点页面底部「保存设置」，再点「发送测试消息」，
+            群里收到即说明地址和签名都对。
+          </li>
+        </ol>
+      </details>
+      <p class="field-hint">
+        通用 JSON 的请求体是
+        <code>{"source":"autodocker","event":"update_available","title":"…","text":"…","image":"…","container":"…"}</code>，
+        事件值为 <code>update_available</code> / <code>update_done</code> / <code>update_failed</code> 等。
+      </p>
+    </div>`;
+}
+
 function renderGuide(ch) {
   const guide = $('#settings-guide');
   if (!guide) return;
   if (ch === 'telegram') {
     guide.innerHTML = telegramGuideHtml();
+    return;
+  }
+  if (ch === 'webhook') {
+    guide.innerHTML = webhookGuideHtml();
     return;
   }
   guide.innerHTML = feishuGuideHtml();
@@ -852,7 +1024,10 @@ function renderSettings() {
   const s = state.settings;
   if (!s) return;
   const ch = currentChannel();
-  const testLabel = ch === 'telegram' ? '发送测试消息' : '发送飞书测试卡片';
+  const testLabel = ch === 'feishu' ? '发送飞书测试卡片' : '发送测试消息';
+  const testHint = ch === 'webhook'
+    ? '填完地址<b>先保存一次</b>，再点这里发一条测试消息 —— 接收端收到即说明地址（和签名密钥）都对。Webhook 只发不收，没有按钮回执。'
+    : '填完上面的凭据<b>先保存一次</b>，再点这里发一条测试消息 —— 消息里带按钮，点一下、消息变成「回调已收到」，才算「发得出去 + 收得回来」两条链路都通了。';
 
   $('#settings-form').innerHTML = `
     <div class="field">
@@ -870,14 +1045,11 @@ function renderSettings() {
     <p class="field-hint">发现新版本时把提醒推到哪里。<b>填好凭据的渠道都会收到</b>，右栏是当前所选渠道的完整配置流程 —— 选谁只决定改哪一份配置，不影响另一个照常推送。</p>
     <div class="channel-picker">${channelChipsHtml(ch)}</div>
     <p class="field-hint">灰色的渠道还在做，暂时不能选。</p>
-    ${ch === 'telegram' ? telegramFieldsHtml(s) : feishuFieldsHtml(s)}
+    ${ch === 'telegram' ? telegramFieldsHtml(s) : (ch === 'webhook' ? webhookFieldsHtml(s) : feishuFieldsHtml(s))}
 
     <div class="notify-test">
       <button type="button" id="btn-test-notify" class="btn ghost">${testLabel}</button>
-      <p class="field-hint">
-        填完上面的凭据<b>先保存一次</b>，再点这里发一条测试消息 ——
-        消息里带按钮，点一下、消息变成「回调已收到」，才算「发得出去 + 收得回来」两条链路都通了。
-      </p>
+      <p class="field-hint">${testHint}</p>
       <div id="notify-callback-state" class="callback-state" hidden></div>
     </div>
 
@@ -1189,6 +1361,139 @@ async function clearHook() {
   }
 }
 
+/* ---------- compose 项目文件（查看 / 编辑 / 应用） ---------- */
+
+// 只碰容器标签里列出的那几份文件：路径由后端从标签解析，
+// 页面传回去的 path 也必须是其中之一，前端不自己拼路径。
+let composeTarget = null; // {containerId, project, files:[{path,content,exists,error}], idx}
+
+async function openComposeModal(img) {
+  if (!img.container_id) {
+    toast('这个容器还没有 ID，先扫描一次再来', 'danger');
+    return;
+  }
+  const target = {
+    containerId: img.container_id,
+    project: img.compose_project || '',
+    files: [],
+    idx: 0,
+  };
+  composeTarget = target;
+  $('#compose-modal-title').textContent = `compose 文件 · ${target.project}`;
+  $('#compose-workdir').textContent = '';
+  $('#compose-file-select').hidden = true;
+  $('#compose-content').value = '';
+  $('#compose-content').readOnly = false;
+  const box = $('#compose-result');
+  box.hidden = true;
+  box.textContent = '';
+  $('#compose-modal').hidden = false;
+
+  try {
+    const res = await api(`/api/compose?container=${encodeURIComponent(img.container_id)}`);
+    if (composeTarget !== target) return; // 请求回来前弹窗已经被关掉/换掉了
+    target.project = res.project || target.project;
+    target.files = res.files || [];
+    $('#compose-modal-title').textContent = `compose 文件 · ${target.project}`;
+    $('#compose-workdir').textContent = res.workdir || '';
+    if (!res.mounted) {
+      showComposeMsg(`面板没有挂载宿主机目录，读不到文件。\n请给面板容器加一行挂载：- ${res.host_root}:${res.mount_root} 后重建。`, 'bad');
+      return;
+    }
+    renderComposeFile(0);
+  } catch (e) {
+    if (composeTarget === target) showComposeMsg('读取失败：' + e.message, 'bad');
+  }
+}
+
+function renderComposeFile(idx) {
+  if (!composeTarget || !composeTarget.files.length) {
+    showComposeMsg('这个项目没有可读的 compose 文件。', 'bad');
+    return;
+  }
+  const files = composeTarget.files;
+  composeTarget.idx = idx;
+  const sel = $('#compose-file-select');
+  if (files.length > 1) {
+    sel.hidden = false;
+    sel.innerHTML = files.map((f, i) =>
+      `<option value="${i}"${i === idx ? ' selected' : ''}>${esc(f.path)}</option>`).join('');
+  } else {
+    sel.hidden = true;
+    sel.innerHTML = '';
+  }
+  const f = files[idx];
+  $('#compose-content').value = f.content || '';
+  $('#compose-content').readOnly = !f.exists;
+  const box = $('#compose-result');
+  if (f.error) showComposeMsg(f.error, 'bad');
+  else if (!f.exists) showComposeMsg('文件还不存在，保存会被拒绝。', 'bad');
+  else { box.hidden = true; box.textContent = ''; }
+}
+
+function showComposeMsg(text, kind, raw) {
+  const box = $('#compose-result');
+  box.hidden = false;
+  box.innerHTML = `<div class="hook-line ${kind || 'ok'}">${esc(text)}</div>` +
+    (raw ? `<pre class="hook-out">${esc(raw)}</pre>` : '');
+}
+
+async function saveComposeFile() {
+  if (!composeTarget) return;
+  const f = composeTarget.files[composeTarget.idx];
+  if (!f) return;
+  const content = $('#compose-content').value;
+  try {
+    const res = await api('/api/compose/file', {
+      method: 'PUT',
+      body: JSON.stringify({ container: composeTarget.containerId, path: f.path, content }),
+    });
+    if (res.unchanged) {
+      showComposeMsg('内容没有变化，未写盘。', 'ok');
+      return;
+    }
+    f.content = content;
+    showComposeMsg(`已写入 ${f.path}`, 'ok', res.backup ? `备份：${res.backup}` : '');
+    toast('compose 文件已保存');
+  } catch (e) {
+    showComposeMsg('保存失败：' + e.message, 'bad');
+    toast('保存失败：' + e.message, 'danger');
+  }
+}
+
+async function applyCompose() {
+  if (!composeTarget) return;
+  if (!composeTarget.files.some((f) => f.exists)) {
+    toast('还没读到任何 compose 文件', 'danger');
+    return;
+  }
+  if (!confirm(`对项目 ${composeTarget.project} 执行 docker compose up -d？\n\n` +
+    '配置有变化的服务会被重建，原本停着的服务也会被启动。')) return;
+  const btn = $('#btn-compose-apply');
+  btn.disabled = true;
+  showComposeMsg('正在执行 docker compose up -d，可能要等几十秒…', 'ok');
+  try {
+    const res = await api('/api/compose/apply', {
+      method: 'POST',
+      body: JSON.stringify({ container: composeTarget.containerId }),
+    });
+    const ok = res.exit === 0;
+    showComposeMsg(ok ? '退出码 0 —— 已应用' : `退出码 ${res.exit} —— 应用失败`,
+      ok ? 'ok' : 'bad', res.output || '（没有输出）');
+    if (ok) loadContainers();
+  } catch (e) {
+    showComposeMsg('应用失败：' + e.message, 'bad');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function closeComposeModal() {
+  const modal = $('#compose-modal');
+  if (modal) modal.hidden = true;
+  composeTarget = null;
+}
+
 /* ---------- 镜像操作 ---------- */
 
 // 删本机镜像：不可逆，需要时只能重新拉
@@ -1358,6 +1663,9 @@ function settingsPayload() {
     telegram_chat_id: cur.telegram_chat_id || '',
     telegram_api_base: cur.telegram_api_base || '',
     telegram_proxy: cur.telegram_proxy || '',
+    webhook_url: cur.webhook_url || '',
+    webhook_secret: cur.webhook_secret || '',
+    webhook_format: cur.webhook_format || 'auto',
     registry_mirror: $('#registry_mirror').value.trim(),
     admin_user: ($('#admin_user').value || '').trim(),
     admin_password: $('#admin_password').value || '',
@@ -1419,6 +1727,18 @@ async function testNotify() {
   const ch = currentChannel();
   const btn = $('#btn-test-notify');
   if (btn) btn.disabled = true;
+
+  // webhook 没有按钮回调，发出去就是全部结论，不用等。
+  if (ch === 'webhook') {
+    try {
+      await api('/api/webhook/test', { method: 'POST' });
+      toast('测试消息已发送，请到接收端查看');
+    } catch (e) {
+      toast('发送失败：' + e.message, 'danger');
+    }
+    if (btn) btn.disabled = false;
+    return;
+  }
 
   // 先取一次计数当基线：用增量而不是绝对时间，避免被上一次测试留下的旧记录干扰。
   let base = 0;
@@ -1697,6 +2017,36 @@ document.addEventListener('click', async (ev) => {
   if (ev.target.closest('[data-close-modal]')) {
     closeCleanModal();
     closeHookModal();
+    closeComposeModal();
+    return;
+  }
+
+  // 一键收起/展开全部分组。只算真正成组的项目（>=2 个容器），
+  // 单容器项目在页面上是平铺行，没有可折叠的东西。
+  if (ev.target.id === 'btn-groups-toggle') {
+    const counts = new Map();
+    for (const c of state.containers) {
+      if (!c.compose_project) continue;
+      counts.set(c.compose_project, (counts.get(c.compose_project) || 0) + 1);
+    }
+    const projects = [...counts].filter(([, n]) => n >= 2).map(([p]) => p);
+    const allCollapsed = projects.length > 0 &&
+      projects.every((p) => state.collapsedProjects.has(p));
+    for (const p of projects) {
+      if (allCollapsed) state.collapsedProjects.delete(p);
+      else state.collapsedProjects.add(p);
+    }
+    renderContainers();
+    return;
+  }
+
+  // 组头：折叠/展开这个 compose 项目。只重绘容器页，不碰别的状态。
+  const groupHead = ev.target.closest('.group-row[data-project]');
+  if (groupHead) {
+    const project = groupHead.dataset.project;
+    if (state.collapsedProjects.has(project)) state.collapsedProjects.delete(project);
+    else state.collapsedProjects.add(project);
+    renderContainers();
     return;
   }
 
@@ -1727,6 +2077,7 @@ document.addEventListener('click', async (ev) => {
     if (act === 'ignore') toggleIgnore(img);
     if (act === 'remove') removeMonitorItem(id);
     if (act === 'hook') openHookModal(img);
+    if (act === 'compose') openComposeModal(img);
     return;
   }
 
@@ -1779,6 +2130,8 @@ document.addEventListener('click', async (ev) => {
   if (ev.target.id === 'btn-hook-save') saveHook();
   if (ev.target.id === 'btn-hook-check') checkHook();
   if (ev.target.id === 'btn-hook-clear') clearHook();
+  if (ev.target.id === 'btn-compose-save') saveComposeFile();
+  if (ev.target.id === 'btn-compose-apply') applyCompose();
   if (ev.target.id === 'btn-read-all') {
     api('/api/notifications/read-all', { method: 'POST' })
       .then(() => { loadNotifications(); loadStats(); toast('已全部标记为已读'); })
@@ -1811,6 +2164,11 @@ document.addEventListener('input', (ev) => {
 });
 
 document.addEventListener('change', (ev) => {
+  if (ev.target.id === 'compose-file-select') {
+    renderComposeFile(Number(ev.target.value));
+    return;
+  }
+
   const sel = ev.target.closest('select[data-mode]');
   if (sel) {
     setMode(Number(sel.dataset.mode), sel.value);
