@@ -143,6 +143,15 @@ func countUnusedImages(images []dockerx.Image, usedIDs map[string]bool) int {
 	return n
 }
 
+// containerRow 容器列表的一行：库里的监控项，加上从 Docker 现取的访问地址。
+//
+// access 为什么不入库：端口映射只在容器重建时才变，而面板每 5 秒刷一次列表。
+// 存进库就会遇到「改了 -p 但库里还是旧的」，点开是死链，比没有链接更糟。
+type containerRow struct {
+	model.Image
+	Access []accessPoint `json:"access"`
+}
+
 // handleListContainers 容器列表：一条记录对应一个容器。
 func (s *Server) handleListContainers(w http.ResponseWriter, r *http.Request) {
 	imgs, err := s.st.ListImages(model.OriginContainer)
@@ -150,7 +159,12 @@ func (s *Server) handleListContainers(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "读取容器列表失败: "+err.Error())
 		return
 	}
-	writeOK(w, map[string]any{"items": imgs, "total": len(imgs)})
+	access := s.accessByContainer(r.Context())
+	items := make([]containerRow, 0, len(imgs))
+	for _, img := range imgs {
+		items = append(items, containerRow{Image: img, Access: access[img.ContainerID]})
+	}
+	writeOK(w, map[string]any{"items": items, "total": len(items)})
 }
 
 // handleListImages 镜像列表：本机真实存在的镜像，加上只做远端盯梢的监控项。
@@ -481,6 +495,85 @@ func (s *Server) handleModeImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, map[string]any{"id": id, "mode": mode, "override": in.Override})
+}
+
+// hookBodyReq 保存脚本配置的请求体。
+// hook 为 null 表示清除 —— 清除后这一项退回普通的注册表比对。
+type hookBodyReq struct {
+	Hook *model.HookSpec `json:"hook"`
+}
+
+// handleSetImageHook 写入或清除一个监控项的脚本配置。
+//
+// 安全门只设在这一处：hook 等于让页面填写者在这台机器上执行命令，
+// 所以没设访问密码（匿名可写）的服务一律拒绝。
+// 结构约束交给 model.ValidateHook，不在 handler 里重复判一遍。
+func (s *Server) handleSetImageHook(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var in hookBodyReq
+	if err := decodeBody(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体格式错误: "+err.Error())
+		return
+	}
+	if _, err := s.st.GetImage(id); err != nil {
+		writeErr(w, http.StatusNotFound, "监控项不存在")
+		return
+	}
+	if in.Hook != nil {
+		if !s.AuthEnabled() {
+			writeErr(w, http.StatusForbidden, "执行更新脚本属于高危操作，请先在设置页启用访问密码")
+			return
+		}
+		if err := model.ValidateHook(in.Hook, s.cfg.HookImage); err != nil {
+			writeErr(w, http.StatusBadRequest, "脚本配置有误: "+err.Error())
+			return
+		}
+	}
+	if err := s.st.SetImageHook(id, in.Hook); err != nil {
+		writeErr(w, http.StatusInternalServerError, "保存失败: "+err.Error())
+		return
+	}
+	writeOK(w, map[string]any{"id": id, "hook": in.Hook})
+}
+
+// handleCheckImageHook 立刻试跑一次检查脚本，把退出码和输出原样回给页面。
+//
+// 这是配置脚本时唯一能确认「路径挂对了没、命令写得对不」的手段，
+// 所以即使这一项还没启用（enabled=false）也允许试跑 —— 草稿阶段就该能验。
+// 请求会一直挂到脚本跑完（最长 check_timeout），填错镜像时靠这条超时兜住。
+func (s *Server) handleCheckImageHook(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	img, err := s.st.GetImage(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "监控项不存在")
+		return
+	}
+	if img.Hook == nil || strings.TrimSpace(img.Hook.CheckCmd) == "" {
+		writeErr(w, http.StatusBadRequest, "该监控项还没填写检查脚本")
+		return
+	}
+	if s.hk == nil {
+		writeErr(w, http.StatusInternalServerError, "服务端未启用脚本执行器")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(),
+		time.Duration(img.Hook.CheckTimeoutSec())*time.Second)
+	defer cancel()
+	res, runErr := s.hk.Run(ctx, img.Hook, img.Hook.CheckCmd, img.ContainerName)
+	if runErr != nil {
+		writeOK(w, map[string]any{"exit": -1, "error": runErr.Error(), "output": ""})
+		return
+	}
+	writeOK(w, map[string]any{"exit": res.Exit, "output": res.Output})
 }
 
 type pullImageReq struct {
@@ -1016,6 +1109,7 @@ func (s *Server) ApplySettings(in model.Settings) {
 		SelfContainer:     s.cfg.SelfContainer,
 		SelfContainerID:   s.cfg.SelfContainerID,
 		Concurrency:       4,
+		Hook:              s.hk,
 	})
 	s.up.SetOptions(updater.Options{
 		PullTimeout:       s.cfg.PullTimeout,
@@ -1025,6 +1119,7 @@ func (s *Server) ApplySettings(in model.Settings) {
 		KeepOldContainer:  in.KeepOldContainer,
 		SelfContainer:     s.cfg.SelfContainer,
 		SelfContainerID:   s.cfg.SelfContainerID,
+		Hook:              s.hk,
 	})
 	// 注册表加速也必须在这里下发：早先只把它交给启动时的环境变量，
 	// 于是用户在设置页填的加速地址保存后毫无作用，检测照样全是「未知」。

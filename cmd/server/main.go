@@ -16,6 +16,7 @@ import (
 	"github.com/haihaipypy/autodocker/internal/api"
 	"github.com/haihaipypy/autodocker/internal/config"
 	"github.com/haihaipypy/autodocker/internal/dockerx"
+	"github.com/haihaipypy/autodocker/internal/hookx"
 	"github.com/haihaipypy/autodocker/internal/model"
 	"github.com/haihaipypy/autodocker/internal/notify"
 	"github.com/haihaipypy/autodocker/internal/notify/feishu"
@@ -110,6 +111,10 @@ func run() error {
 		ChatID:    cfg.FeishuChatID,
 	})
 
+	// 脚本型监控项的执行器：本地构建的镜像（compose build 出来的）没有注册表可比，
+	// 检测与更新都交给项目目录里自带的 check/update 脚本。
+	hk := hookx.New(dk, cfg.HookImage, logger)
+
 	up := updater.New(dk, st, updater.Options{
 		PullTimeout:       cfg.PullTimeout,
 		StopTimeoutSec:    30,
@@ -118,6 +123,7 @@ func run() error {
 		KeepOldContainer:  cfg.KeepOldContainer,
 		SelfContainer:     cfg.SelfContainer,
 		SelfContainerID:   cfg.SelfContainerID,
+		Hook:              hk,
 	}, logger)
 
 	nt := notify.New(ctx, fs, st, up, logger)
@@ -127,6 +133,7 @@ func run() error {
 		SelfContainer:   cfg.SelfContainer,
 		SelfContainerID: cfg.SelfContainerID,
 		Concurrency:     4,
+		Hook:            hk,
 	}, logger)
 	sc.SetNotifier(nt)
 
@@ -138,6 +145,7 @@ func run() error {
 		Notify:   nt,
 		Registry: reg,
 		Docker:   dk,
+		Hook:     hk,
 		Logger:   logger,
 	})
 	// 以持久化设置为准（环境变量只作首次启动的初值）。

@@ -547,6 +547,21 @@ func (s *Service) TriggerUpdate(n *model.Notification, triggeredBy string) (int6
 	return taskID, nil
 }
 
+// hookSpec 取该监控项上生效的更新脚本；普通监控项返回 nil。
+//
+// 只认「已启用 + 真的写了更新命令」这两条：网页上刚存了一半的草稿不该改变更新行为。
+func (s *Service) hookSpec(n *model.Notification) *model.HookSpec {
+	img, err := s.st.FindImage(TargetRef(n), n.ContainerID)
+	if err != nil {
+		return nil
+	}
+	h := img.Hook
+	if h == nil || !h.Enabled || strings.TrimSpace(h.UpdateCmd) == "" {
+		return nil
+	}
+	return h
+}
+
 // runUpdate 在后台执行更新，并把最终结果写回原消息。
 func (s *Service) runUpdate(n *model.Notification, taskID int64, triggeredBy string) {
 	ctx, cancel := context.WithTimeout(s.baseCtx, 45*time.Minute)
@@ -556,22 +571,45 @@ func (s *Service) runUpdate(n *model.Notification, taskID int64, triggeredBy str
 	s.log.Info("开始执行更新", "task", taskID, "container", n.ContainerName,
 		"from", n.ImageRef, "target", target, "by", triggeredBy)
 
-	err := s.up.Run(ctx, updater.Request{
-		TaskID:        taskID,
-		ImageRef:      target,
-		ContainerID:   n.ContainerID,
-		ContainerName: n.ContainerName,
-		TriggeredBy:   triggeredBy,
-	})
+	// 脚本型监控项走项目自带的 update.sh，不去重建容器。
+	// 判断只看数据库里那份设置：三个入口（飞书 / Telegram / 网页）都汇到这一处，
+	// 在这里分叉才能保证「哪儿点都是同一件事」。
+	spec := s.hookSpec(n)
+	isHook := spec != nil
+	var err error
+	if isHook {
+		err = s.up.RunHook(ctx, updater.HookRequest{
+			TaskID:        taskID,
+			ImageRef:      target,
+			ContainerID:   n.ContainerID,
+			ContainerName: n.ContainerName,
+			Spec:          spec,
+		})
+	} else {
+		err = s.up.Run(ctx, updater.Request{
+			TaskID:        taskID,
+			ImageRef:      target,
+			ContainerID:   n.ContainerID,
+			ContainerName: n.ContainerName,
+			TriggeredBy:   triggeredBy,
+		})
+	}
 
 	state := model.CardDone
 	detail := "容器已在新镜像上重建完成，原有挂载、端口与网络配置保持不变。"
+	if isHook {
+		detail = "更新脚本已执行完成，新版本由脚本按项目自身的方式构建并重启。"
+	}
 	if err != nil {
 		state = model.CardFailed
 		detail = "更新失败：" + err.Error()
 		if t, terr := s.st.GetTask(taskID); terr == nil && t.Status == model.TaskRolledBack {
 			state = model.CardRollback
-			detail = "新容器未通过健康检查，已自动回滚到原版本（原容器已恢复运行）。\n原因：" + err.Error()
+			if isHook {
+				detail = "更新脚本执行失败，项目脚本已自行回滚到原版本。\n原因：" + err.Error()
+			} else {
+				detail = "新容器未通过健康检查，已自动回滚到原版本（原容器已恢复运行）。\n原因：" + err.Error()
+			}
 		}
 	}
 

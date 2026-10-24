@@ -118,6 +118,7 @@ docker compose up -d --build
 | `REGISTRY_MIRROR` | Docker Hub 加速地址，可填多个、逗号分隔、按序回退，例如 `docker.1ms.run,docker.xuanyuan.me`。留空时按「守护进程 `registry-mirrors` → 内置默认」依次兜底。**只作用于 Docker Hub**，ghcr.io / quay.io / 私有仓库仍直连 |
 | `REGISTRY_AUTH` | 私有仓库凭据，形如 `docker.io=user:pass,ghcr.io=ghp_xxx` |
 | `REGISTRY_INSECURE` | 允许 http 明文注册表。`127.0.0.1` / `localhost` / `::1` 这类回环地址**不需要打开它**，会自动走 http（与 Docker 守护进程的默认规则一致）；打开后则是**所有**源都改用 http，Docker Hub 与公共加速站会因此整片失败，只在必要时刻临时开 |
+| `HOOK_IMAGE` | 「脚本检测」用的辅助容器镜像，供本机自建、仓库里比不了版本的镜像调用项目自带的 `update.sh`。默认空 = 必须在那份 JSON 里逐条写 `image`。这个镜像要同时有 bash、curl、docker、compose、git、python3，现成的 `docker:*-cli` 只满足其中一条，用 `tools/hook-runner/Dockerfile` 自己构建一个 |
 | `STATIC_DIR` | 指向 `web/` 目录以覆盖内嵌前端，改前端时免重新编译 |
 
 ## 关于容器本身

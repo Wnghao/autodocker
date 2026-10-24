@@ -17,7 +17,7 @@ var ErrNotFound = errors.New("记录不存在")
 const imageCols = `id, reference, container_id, container_name, origin, image_id, size_bytes,
 	image_created, dangling, local_digest, remote_digest,
 	local_tag, latest_tag, aliases, mode, mode_override, ignored, ignored_digest, status,
-	baseline_at, last_checked_at, last_error, created_at, updated_at`
+	baseline_at, last_checked_at, last_error, hook_spec, created_at, updated_at`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -27,6 +27,7 @@ func scanImage(sc rowScanner) (model.Image, error) {
 	var (
 		img                   model.Image
 		aliasesJSON           string
+		hookJSON              string
 		modeOverride, ignored int
 		dangling              int
 		baselineAt            int64
@@ -38,7 +39,7 @@ func scanImage(sc rowScanner) (model.Image, error) {
 		&img.Origin, &img.ImageID, &img.SizeBytes, &img.ImageCreated, &dangling,
 		&img.LocalDigest, &img.RemoteDigest, &img.LocalTag, &img.LatestTag,
 		&aliasesJSON, &img.Mode, &modeOverride, &ignored, &img.IgnoredDigest, &img.Status,
-		&baselineAt, &lastChecked, &img.LastError, &createdAt, &updatedAt,
+		&baselineAt, &lastChecked, &img.LastError, &hookJSON, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return img, err
@@ -52,6 +53,12 @@ func scanImage(sc rowScanner) (model.Image, error) {
 	img.UpdatedAt = tsToTime(updatedAt)
 	if aliasesJSON != "" {
 		_ = json.Unmarshal([]byte(aliasesJSON), &img.Aliases)
+	}
+	if hookJSON != "" {
+		var spec model.HookSpec
+		if json.Unmarshal([]byte(hookJSON), &spec) == nil {
+			img.Hook = &spec
+		}
 	}
 	if img.Origin == "" {
 		// 理论上迁移已经回填过，这里再兜一层，避免旧数据把归属判断漏掉。
@@ -91,6 +98,13 @@ func (s *Store) UpsertImage(img *model.Image) (int64, error) {
 	if err != nil {
 		aliases = []byte("[]")
 	}
+	hookJSON := ""
+	if img.Hook != nil {
+		b, herr := json.Marshal(img.Hook)
+		if herr == nil {
+			hookJSON = string(b)
+		}
+	}
 
 	var id int64
 	err = s.db.QueryRow(`
@@ -98,8 +112,8 @@ func (s *Store) UpsertImage(img *model.Image) (int64, error) {
 			reference, container_id, container_name, origin, image_id, size_bytes,
 			image_created, dangling, local_digest, remote_digest,
 			local_tag, latest_tag, aliases, mode, mode_override, ignored, ignored_digest, status,
-			baseline_at, last_checked_at, last_error, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			baseline_at, last_checked_at, last_error, hook_spec, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(reference, container_id) DO UPDATE SET
 			container_name  = excluded.container_name,
 			origin          = excluded.origin,
@@ -119,7 +133,7 @@ func (s *Store) UpsertImage(img *model.Image) (int64, error) {
 		img.SizeBytes, img.ImageCreated, b2i(img.Dangling), img.LocalDigest, img.RemoteDigest,
 		img.LocalTag, img.LatestTag, string(aliases), img.Mode, b2i(img.ModeOverride), b2i(img.Ignored),
 		img.IgnoredDigest, img.Status,
-		timeToTs(img.BaselineAt), timeToTs(img.LastCheckedAt), img.LastError, timeToTs(img.CreatedAt), timeToTs(img.UpdatedAt),
+		timeToTs(img.BaselineAt), timeToTs(img.LastCheckedAt), img.LastError, hookJSON, timeToTs(img.CreatedAt), timeToTs(img.UpdatedAt),
 	).Scan(&id)
 	if err != nil {
 		return 0, err
@@ -163,6 +177,24 @@ func (s *Store) FindImage(reference, containerID string) (*model.Image, error) {
 	img, err := scanImage(s.db.QueryRow(
 		`SELECT `+imageCols+` FROM images WHERE reference = ? AND container_id = ?`,
 		reference, containerID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &img, nil
+}
+
+// FindImageByContainer 按容器定位监控项，不管这条记录写的是哪个引用。
+//
+// 更新完成后要用：发现更高版本 tag 时，目标引用和记录里的引用本就不同，
+// 按「引用 + 容器」查必然查不到，记录会一直挂在已经被删掉的旧容器上。
+func (s *Store) FindImageByContainer(containerID string) (*model.Image, error) {
+	img, err := scanImage(s.db.QueryRow(
+		`SELECT `+imageCols+` FROM images WHERE container_id = ?`,
+		containerID,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -286,11 +318,14 @@ func (s *Store) UpdateImageCheck(id int64, status model.Status, remoteDigest, la
 }
 
 // UpdateImageLocal 刷新本地镜像观测值（本地 digest / tag 可能随容器重建变化）。
-func (s *Store) UpdateImageLocal(id int64, containerID, containerName, localDigest, localTag string) error {
+//
+// reference 一并写入：升到更高的版本 tag 之后，这个容器跑的已经是另一个引用了，
+// 记录要是还写着旧引用，页面上就永远对不上。
+func (s *Store) UpdateImageLocal(id int64, reference, containerID, containerName, localDigest, localTag string) error {
 	_, err := s.db.Exec(`
-		UPDATE images SET container_id = ?, container_name = ?, local_digest = ?, local_tag = ?, updated_at = ?
+		UPDATE images SET reference = ?, container_id = ?, container_name = ?, local_digest = ?, local_tag = ?, updated_at = ?
 		WHERE id = ?`,
-		containerID, containerName, localDigest, localTag, timeToTs(time.Now()), id,
+		reference, containerID, containerName, localDigest, localTag, timeToTs(time.Now()), id,
 	)
 	return err
 }
@@ -328,6 +363,30 @@ func (s *Store) SetImageIgnoredDigest(id int64, digest string) error {
 func (s *Store) SetImageMode(id int64, mode model.DetectMode, override bool) error {
 	_, err := s.db.Exec(`UPDATE images SET mode = ?, mode_override = ?, updated_at = ? WHERE id = ?`,
 		string(mode), b2i(override), timeToTs(time.Now()), id)
+	return err
+}
+
+// SetImageHook 写入或清除脚本型监控项的 hook 配置。
+//
+// 传 nil 即清除；清除时把「忽略本版本」的放行标记一起抹掉 ——
+// hook 项存进去的那个摘要值是脚本路径专用的合成标记，
+// 留着会让下一轮的注册表比对永远对不上，等于埋了个永不复位的抑制位。
+func (s *Store) SetImageHook(id int64, hook *model.HookSpec) error {
+	specJSON := ""
+	if hook != nil {
+		b, err := json.Marshal(hook)
+		if err != nil {
+			return err
+		}
+		specJSON = string(b)
+	}
+	if hook == nil {
+		_, err := s.db.Exec(`UPDATE images SET hook_spec = '', ignored_digest = '', status = ?, updated_at = ? WHERE id = ?`,
+			string(model.StatusUnknown), timeToTs(time.Now()), id)
+		return err
+	}
+	_, err := s.db.Exec(`UPDATE images SET hook_spec = ?, updated_at = ? WHERE id = ?`,
+		specJSON, timeToTs(time.Now()), id)
 	return err
 }
 

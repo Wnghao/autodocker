@@ -72,6 +72,7 @@ func (s *Store) migrate() error {
 			baseline_at     INTEGER NOT NULL DEFAULT 0,
 			last_checked_at INTEGER NOT NULL DEFAULT 0,
 			last_error      TEXT    NOT NULL DEFAULT '',
+			hook_spec       TEXT    NOT NULL DEFAULT '',
 			created_at      INTEGER NOT NULL DEFAULT 0,
 			updated_at      INTEGER NOT NULL DEFAULT 0,
 			UNIQUE(reference, container_id)
@@ -160,6 +161,8 @@ var imageAddedColumns = []struct{ name, ddl string }{
 	{"dangling", "INTEGER NOT NULL DEFAULT 0"},
 	// 用户在飞书卡片上「忽略本版本」时记下的远端摘要，见 model.Image.IgnoredDigest。
 	{"ignored_digest", "TEXT NOT NULL DEFAULT ''"},
+	// 脚本型监控项的 hook 配置（JSON），见 model.HookSpec。
+	{"hook_spec", "TEXT NOT NULL DEFAULT ''"},
 }
 
 // notificationAddedColumns 是 1.2.4 起为 notifications 表新增的列。

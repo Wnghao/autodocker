@@ -327,6 +327,13 @@ function ackIgnored(img) {
   return !img.ignored && !!img.ignored_digest && img.ignored_digest === img.remote_digest;
 }
 
+/* 容器的访问地址。端口是后端从 Docker 现取的，主机名只有浏览器知道：
+   同一台 NAS，面板可能用局域网 IP、域名或反代打开，写死 IP 就会在
+   换网络或上反代之后变成死链。 */
+function accessHref(a) {
+  return `${a.tls ? 'https' : 'http'}://${location.hostname}:${a.port}/`;
+}
+
 /* 容器列表：一条记录对应一个真实容器，「更新」等于按原配置重建它。 */
 function renderContainers() {
   const kw = state.containerSearch.trim().toLowerCase();
@@ -351,6 +358,9 @@ function renderContainers() {
       (img.status === 'update_available' || img.status === 'new_version_tag');
     const err = img.status === 'unknown' ? (img.last_error || '') : '';
     const acked = ackIgnored(img);
+    // 脚本型监控项：这一行的「有没有新版」由项目自带的检查脚本说了算，
+    // 注册表比对与检测模式都不再参与，所以那一格要换成说明文字而不是一个改了没用的下拉框。
+    const isHook = !!(img.hook && img.hook.enabled);
 
     // 「可用」列的含义是「仓库里有没有更高的版本号」，不是「能拉到什么」。
     // 三种情况要分开写，否则会让人以为没取到数：
@@ -359,15 +369,28 @@ function renderContainers() {
     //   这类镜像的 tag 里带的数字是架构而不是版本号（v3-386 / v3-arm64 这种并列发布），
     //   永远不可能有「更高版本」，点更新拉到的还是同一个 tag，只是它的最新内容；
     // · 其余（已是最新 / 未知）→ 留横杠。
-    const avail = img.latest_tag
-      ? `<div class="cell-main mono">${esc(img.latest_tag)}</div>`
-      : (img.status === 'update_available'
-        ? `<div class="cell-main hint-text" title="仓库里 ${esc(img.reference)} 这个 tag 已被重新推送，点「更新」拉到它的最新内容，版本号不变">内容已更新</div>`
-        : '<div class="cell-main mono">—</div>');
+    // 脚本型另说：本机自建的镜像本来就没有版本号可比。
+    const avail = isHook
+      ? (img.status === 'update_available'
+        ? `<div class="cell-main hint-text" title="检查脚本（${esc(img.hook.check_cmd)}）报告上游有可用内容；点「更新」执行更新脚本，脚本自带回滚">脚本报告可更新</div>`
+        : '<div class="cell-main hint-text" title="本机自建的镜像不在仓库上，有没有更新由检查脚本判定">脚本判定</div>')
+      : img.latest_tag
+        ? `<div class="cell-main mono">${esc(img.latest_tag)}</div>`
+        : (img.status === 'update_available'
+          ? `<div class="cell-main hint-text" title="仓库里 ${esc(img.reference)} 这个 tag 已被重新推送，点「更新」拉到它的最新内容，版本号不变">内容已更新</div>`
+          : '<div class="cell-main mono">—</div>');
+    // 有多个发布端口时只跳最像「主入口」的那个（后端排好序），其余写在悬浮里。
+    const acc = img.access || [];
+    const name = esc(img.container_name || '—');
+    const main = acc.length
+      ? `<a class="jump" href="${accessHref(acc[0])}" target="_blank" rel="noopener"${
+        acc.length > 1 ? ` title="这个容器还有：${esc(acc.slice(1).map(accessHref).join('、'))}"` : ''}>${name}</a>`
+      : name;
     return `
     <div class="row" data-id="${img.id}">
       <div class="cell grow">
-        <div class="cell-main">${esc(img.container_name || '—')}</div>
+        <div class="cell-main">${main}${
+          isHook ? ' <span class="tag-hook" title="检测与更新都走项目自带脚本">脚本</span>' : ''}</div>
         <div class="cell-sub">${esc(img.reference)}</div>
         ${err ? `<div class="cell-err" title="${esc(err)}">${esc(shortErr(err))}</div>` : ''}
       </div>
@@ -381,11 +404,13 @@ function renderContainers() {
       </div>
       <div class="cell col-mode">
         <div class="cell-sub">检测模式</div>
-        <select class="mode-select" data-mode="${img.id}"
+        ${isHook
+          ? '<div class="cell-main hint-text" title="这一项由检查脚本判定，注册表比对与下面三种模式都不参与">脚本检测</div>'
+          : `<select class="mode-select" data-mode="${img.id}"
                 title="自动：版本号 tag（1.25）走版本监听，latest 等浮动 tag 走摘要比对">
           ${['auto', 'digest-only', 'pin-watch'].map((m) =>
             `<option value="${m}"${(img.mode || 'auto') === m ? ' selected' : ''}>${MODE[m]}</option>`).join('')}
-        </select>
+        </select>`}
       </div>
       <div class="cell col-status center"${err ? ` title="${esc(err)}"` : ''}>${
         acked
@@ -393,6 +418,8 @@ function renderContainers() {
           : badge(STATUS, img.status)}</div>
       <div class="cell actions">
         ${canUpdate ? '<button class="btn small primary" data-act="update">更新</button>' : ''}
+        <button class="btn small ghost" data-act="hook"${
+          isHook ? '' : ' title="配置检查/更新脚本，用于本机自建、仓库里比不了版本的镜像"'}>脚本</button>
         <button class="btn small ghost" data-act="ignore"${
           acked ? ' title="清除「已忽略本版本」，下次扫描若仍是这一版会重新提醒"' : ''}>${
           img.ignored ? '恢复' : (acked ? '恢复提醒' : '忽略')}</button>
@@ -1037,6 +1064,131 @@ async function removeMonitorItem(id) {
   }
 }
 
+/* ---------- 脚本型监控项（本机自建的镜像） ---------- */
+
+// 这些镜像是本机 build 出来的，不在任何仓库上，摘要与版本号都没处比。
+// 但它们的项目目录里通常已经有 update.sh：查上游、重建、健康检查、失败回滚都写好了。
+// 这里做的事只是把那两份约定接进来 —— 检查脚本退出码 10=有更新，更新脚本退出码 0=成功、1=已回滚。
+let hookTarget = null; // {id, name}
+
+function openHookModal(img) {
+  hookTarget = { id: img.id, name: img.container_name || img.reference };
+  const spec = img.hook || {
+    enabled: false,
+    image: '',
+    cwd: '',
+    check_cmd: './update.sh --check',
+    update_cmd: './update.sh',
+    mounts: [],
+    network: 'host',
+    check_timeout: 180,
+    update_timeout: 1800,
+  };
+  $('#hook-modal-title').textContent = `脚本检测与更新 · ${hookTarget.name}`;
+  $('#hook-json').value = JSON.stringify(spec, null, 2);
+  const box = $('#hook-result');
+  box.hidden = true;
+  box.textContent = '';
+  $('#hook-modal').hidden = false;
+}
+
+function closeHookModal() {
+  const modal = $('#hook-modal');
+  if (modal) modal.hidden = true;
+  hookTarget = null;
+}
+
+function readHookJson() {
+  let spec;
+  try {
+    spec = JSON.parse($('#hook-json').value);
+  } catch (e) {
+    toast('JSON 没写对：' + e.message, 'danger');
+    return null;
+  }
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+    toast('这里要的是一份对象配置（{ ... }）', 'danger');
+    return null;
+  }
+  return spec;
+}
+
+// 保存这份配置。后端只认库里的版本，所以「测试检查」之前必须先存。
+async function persistHook() {
+  const spec = readHookJson();
+  if (!spec || !hookTarget) return null;
+  return api(`/api/images/${hookTarget.id}/hook`, {
+    method: 'PUT',
+    body: JSON.stringify({ hook: spec }),
+  });
+}
+
+async function saveHook() {
+  try {
+    await persistHook();
+    toast('脚本配置已保存');
+    closeHookModal();
+    loadContainers();
+  } catch (e) {
+    toast('保存失败：' + e.message, 'danger');
+  }
+}
+
+async function checkHook() {
+  if (!hookTarget) return;
+  try {
+    await persistHook();
+  } catch (e) {
+    toast('保存失败，无法试跑：' + e.message, 'danger');
+    return;
+  }
+
+  const box = $('#hook-result');
+  const btn = $('#btn-hook-check');
+  box.hidden = false;
+  box.textContent = '正在起辅助容器执行检查脚本，可能要等十几秒…';
+  btn.disabled = true;
+  try {
+    const res = await api(`/api/images/${hookTarget.id}/hook/check`, { method: 'POST' });
+    box.innerHTML = hookVerdict(res);
+  } catch (e) {
+    box.innerHTML = `<div class="hook-line bad">试跑失败：${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+  loadContainers();
+}
+
+// 把退出码翻译成一句人话，省得回去翻约定。
+function hookVerdict(res) {
+  if (res.error) {
+    return `<div class="hook-line bad">脚本没能跑起来：${esc(res.error)}</div>`;
+  }
+  const label = {
+    0: '<div class="hook-line ok">退出码 0 —— 脚本判定：已是最新</div>',
+    10: '<div class="hook-line ok">退出码 10 —— 脚本判定：有可用更新</div>',
+  }[res.exit];
+  const head = label ||
+    `<div class="hook-line bad">退出码 ${esc(res.exit)} —— 不是约定里的 0 或 10，按检查失败处理</div>`;
+  return head + `<pre class="hook-out">${esc(res.output || '（脚本没有任何输出）')}</pre>`;
+}
+
+async function clearHook() {
+  if (!hookTarget) return;
+  if (!confirm('清除这一项的脚本配置？清除后它会退回普通的仓库版本比对。')) return;
+  try {
+    await api(`/api/images/${hookTarget.id}/hook`, {
+      method: 'PUT',
+      body: JSON.stringify({ hook: null }),
+    });
+    toast('已清除脚本配置');
+    closeHookModal();
+    loadContainers();
+  } catch (e) {
+    toast('清除失败：' + e.message, 'danger');
+  }
+}
+
 /* ---------- 镜像操作 ---------- */
 
 // 删本机镜像：不可逆，需要时只能重新拉
@@ -1544,6 +1696,7 @@ document.addEventListener('click', async (ev) => {
 
   if (ev.target.closest('[data-close-modal]')) {
     closeCleanModal();
+    closeHookModal();
     return;
   }
 
@@ -1573,6 +1726,7 @@ document.addEventListener('click', async (ev) => {
     if (act === 'update') triggerUpdate(id);
     if (act === 'ignore') toggleIgnore(img);
     if (act === 'remove') removeMonitorItem(id);
+    if (act === 'hook') openHookModal(img);
     return;
   }
 
@@ -1622,6 +1776,9 @@ document.addEventListener('click', async (ev) => {
   if (ev.target.id === 'btn-clean') openCleanModal();
   if (ev.target.id === 'btn-clean-ok') doClean();
   if (ev.target.id === 'btn-remove-picked') removePicked();
+  if (ev.target.id === 'btn-hook-save') saveHook();
+  if (ev.target.id === 'btn-hook-check') checkHook();
+  if (ev.target.id === 'btn-hook-clear') clearHook();
   if (ev.target.id === 'btn-read-all') {
     api('/api/notifications/read-all', { method: 'POST' })
       .then(() => { loadNotifications(); loadStats(); toast('已全部标记为已读'); })

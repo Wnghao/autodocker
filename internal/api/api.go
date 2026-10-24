@@ -17,6 +17,7 @@ import (
 
 	"github.com/haihaipypy/autodocker/internal/config"
 	"github.com/haihaipypy/autodocker/internal/dockerx"
+	"github.com/haihaipypy/autodocker/internal/hookx"
 	"github.com/haihaipypy/autodocker/internal/notify"
 	"github.com/haihaipypy/autodocker/internal/registry"
 	"github.com/haihaipypy/autodocker/internal/scanner"
@@ -34,6 +35,7 @@ type Deps struct {
 	Notify   *notify.Service
 	Registry *registry.Client
 	Docker   *dockerx.Client
+	Hook     hookx.Executor
 	Logger   *slog.Logger
 }
 
@@ -46,6 +48,7 @@ type Server struct {
 	nt  *notify.Service
 	reg *registry.Client
 	dk  *dockerx.Client
+	hk  hookx.Executor
 	log *slog.Logger
 
 	// 访问密码可以在设置页随时改，所以不能直接读 cfg —— 那是启动时定死的。
@@ -72,6 +75,7 @@ func New(d Deps) *Server {
 		nt:  d.Notify,
 		reg: d.Registry,
 		dk:  d.Docker,
+		hk:  d.Hook,
 		log: d.Logger,
 	}
 	// 环境变量里的凭据只作首次启动的初值，之后以数据库里的设置为准
@@ -116,6 +120,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/images/{id}", s.handleDeleteImage)
 	mux.HandleFunc("PUT /api/images/{id}/ignored", s.handleIgnoreImage)
 	mux.HandleFunc("PUT /api/images/{id}/mode", s.handleModeImage)
+	// 脚本型监控项：本地构建的镜像没有注册表可比，检测与更新交给项目自带的脚本
+	mux.HandleFunc("PUT /api/images/{id}/hook", s.handleSetImageHook)
+	mux.HandleFunc("POST /api/images/{id}/hook/check", s.handleCheckImageHook)
 
 	mux.HandleFunc("POST /api/scan", s.handleScan)
 	mux.HandleFunc("GET /api/scans", s.handleScans)

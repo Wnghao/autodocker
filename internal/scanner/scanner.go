@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/haihaipypy/autodocker/internal/dockerx"
+	"github.com/haihaipypy/autodocker/internal/hookx"
 	"github.com/haihaipypy/autodocker/internal/model"
 	"github.com/haihaipypy/autodocker/internal/registry"
 	"github.com/haihaipypy/autodocker/internal/store"
@@ -34,6 +35,7 @@ type Options struct {
 	SelfContainer     string
 	SelfContainerID   string
 	Concurrency       int
+	Hook              hookx.Executor // 脚本型监控项的执行器，nil 时 hook 项跳过
 }
 
 // Result 单个镜像的检测结果。
@@ -213,6 +215,15 @@ func (s *Scanner) checkContainer(ctx context.Context, c dockerx.Container, force
 		return Result{Skipped: true}
 	}
 
+	// 脚本型监控项：不查注册表，改跑 check_cmd（退出码 10 = 有可用更新）。
+	if findErr == nil && existing.Hook != nil && existing.Hook.Enabled {
+		if s.opt.Hook == nil {
+			s.log.Warn("监控项配了 hook 但执行器未启用，跳过检测", "container", c.Name)
+			return Result{Skipped: true}
+		}
+		return s.checkContainerHook(ctx, c, ref, existing, force)
+	}
+
 	mode := model.ModeAuto
 	if findErr == nil && existing.Mode != "" {
 		mode = existing.Mode
@@ -270,8 +281,87 @@ func (s *Scanner) checkContainer(ctx context.Context, c dockerx.Container, force
 		return Result{}
 	}
 
-	notified := s.notify(ctx, img, kind, force)
+	notified := s.notify(ctx, img, kind, force, "")
 	return Result{HasUpdate: true, Notified: notified}
+}
+
+// checkContainerHook 用项目自带脚本判定一个容器是否有可用更新。
+//
+// 约定与 update.sh 的包装脚本一致：check_cmd 退出码 0 = 已是最新，
+// 10 = 发现可用更新，其余 = 检查本身失败（把输出尾部写进列表小字）。
+// 「远端摘要」在这里没有注册表可比，用 hook@<本机镜像短ID> 合成一个：
+// 用户点「忽略本版本」记下它之后，只要还在跑同一个镜像就不会再打扰；
+// 一旦镜像被重建（ID 变了）而脚本又报有更新，那是真的新内容，照常提醒。
+func (s *Scanner) checkContainerHook(ctx context.Context, c dockerx.Container, ref registry.Reference, existing *model.Image, force bool) Result {
+	spec := existing.Hook
+
+	cctx, cancel := context.WithTimeout(ctx, time.Duration(spec.CheckTimeoutSec())*time.Second)
+	res, runErr := s.opt.Hook.Run(cctx, spec, spec.CheckCmd, c.Name)
+	cancel()
+
+	marker := "hook@" + shortImageID(c.ImageID)
+
+	if runErr != nil {
+		img := s.upsertImage(existing, c, ref, model.StatusUnknown)
+		_ = s.st.UpdateImageCheck(img.ID, model.StatusUnknown, existing.RemoteDigest, "", nil, existing.Mode, runErr.Error())
+		return Result{Skipped: true}
+	}
+
+	var status model.Status
+	var detail string
+	switch res.Exit {
+	case model.HookExitUpdateAvail:
+		status = model.StatusUpdatePending
+		detail = res.Output
+	case model.HookExitUpToDate:
+		status = model.StatusUpToDate
+	default:
+		img := s.upsertImage(existing, c, ref, model.StatusUnknown)
+		errMsg := fmt.Sprintf("检查脚本退出码 %d：%s", res.Exit, tailText(res.Output, 300))
+		_ = s.st.UpdateImageCheck(img.ID, model.StatusUnknown, "", "", nil, existing.Mode, errMsg)
+		return Result{Skipped: true}
+	}
+
+	img := s.upsertImage(existing, c, ref, status)
+	// 内存里这份也要带上合成标记：notify 的「忽略本版本」判断比的是
+	// img.IgnoredDigest == img.RemoteDigest，而 upsertImage 造出来的新对象不含远端值。
+	// 漏了这一行，用户点过忽略后下一轮照样会收到提醒。
+	img.RemoteDigest = marker
+	if err := s.st.UpdateImageCheck(img.ID, status, marker, "", nil, existing.Mode, ""); err != nil {
+		s.log.Warn("写入检测结果失败", "err", err)
+	}
+	if status != model.StatusUpdatePending {
+		return Result{}
+	}
+	notified := s.notify(ctx, img, model.NotifNewVersion, force, detail)
+	return Result{HasUpdate: true, Notified: notified}
+}
+
+// shortImageID 把 sha256:… 的镜像 ID 压成短码。
+func shortImageID(id string) string {
+	id = strings.TrimPrefix(id, "sha256:")
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+// tailText 取输出末尾若干字符并压成一行，供错误提示用。
+func tailText(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > n {
+		s = "…" + s[len(s)-n:]
+	}
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// lastLines 取输出末尾 n 行，供通知正文展示。
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // imageTarget 一个镜像维度的监控目标：本机镜像，或仅在远端盯梢的引用。
@@ -500,7 +590,7 @@ func (s *Scanner) checkImageTarget(ctx context.Context, t imageTarget, force boo
 	if status == model.StatusNewTag {
 		kind = model.NotifNewTag
 	}
-	notified := s.notify(ctx, img, kind, force)
+	notified := s.notify(ctx, img, kind, force, "")
 	return Result{HasUpdate: true, Notified: notified}
 }
 
@@ -549,6 +639,9 @@ func (s *Scanner) upsertImage(existing *model.Image, c dockerx.Container, ref re
 		img.IgnoredDigest = existing.IgnoredDigest
 		img.Aliases = existing.Aliases
 		img.LatestTag = existing.LatestTag
+		// hook 配置是用户侧设定，扫描重建记录时必须原样带上，
+		// 否则容器引用写法一变、旧行被删后重建，hook 就无声消失了。
+		img.Hook = existing.Hook
 	}
 	if _, err := s.st.UpsertImage(img); err != nil {
 		s.log.Warn("写入监控项失败", "ref", c.Image, "err", err)
@@ -557,7 +650,8 @@ func (s *Scanner) upsertImage(existing *model.Image, c dockerx.Container, ref re
 }
 
 // notify 去重后生成并推送通知，返回是否真的推送了。
-func (s *Scanner) notify(ctx context.Context, img *model.Image, kind model.NotificationKind, force bool) bool {
+// detail 为脚本型监控项附加的检查输出，注册表比对路径传空串。
+func (s *Scanner) notify(ctx context.Context, img *model.Image, kind model.NotificationKind, force bool, detail string) bool {
 	if !force {
 		// 同一条监控项已有待处理的通知时不再重复打扰
 		if _, err := s.st.FindPendingNotification(img.Reference, img.ContainerID); err == nil {
@@ -585,13 +679,16 @@ func (s *Scanner) notify(ctx context.Context, img *model.Image, kind model.Notif
 		ContainerName: img.ContainerName,
 		Kind:          kind,
 		LocalSummary:  version.ShortDigest(img.LocalDigest),
-		RemoteSummary: version.ShortDigest(img.RemoteDigest),
+		RemoteSummary: hookFriendlyDigest(img.RemoteDigest),
 		LocalTag:      img.LocalTag,
 		LatestTag:     img.LatestTag,
 		Aliases:       img.Aliases,
 		CardState:     model.CardPending,
 	}
 	n.Title, n.Body = buildText(img, kind)
+	if detail != "" {
+		n.Body += "\n\n检查脚本输出（末尾数行）：\n```\n" + lastLines(detail, 6) + "\n```"
+	}
 
 	id, err := s.st.CreateNotification(n)
 	if err != nil {
@@ -622,11 +719,28 @@ func (s *Scanner) notify(ctx context.Context, img *model.Image, kind model.Notif
 	return true
 }
 
+// hookFriendlyDigest 给通知用「可用版本」那栏的显示值。
+//
+// 脚本型监控项没有摘要可比，存进去的是 hook@<镜像短ID> 这种合成标记。
+// 它本身已经是短码，再按 digest 规则截一次会显示成「hook@abcdef0」这种半截样子。
+func hookFriendlyDigest(remote string) string {
+	if strings.HasPrefix(remote, "hook@") {
+		return remote
+	}
+	return version.ShortDigest(remote)
+}
+
 // buildText 生成通知标题与正文。
 func buildText(img *model.Image, kind model.NotificationKind) (title, body string) {
 	name := img.ContainerName
 	if name == "" {
 		name = img.Reference
+	}
+	if img.Hook != nil && img.Hook.Enabled {
+		title = fmt.Sprintf("%s 有可用更新", name)
+		body = fmt.Sprintf("检查脚本（`%s`）报告发现可用更新。\n点击下方按钮执行更新脚本（`%s`），脚本自带备份与失败回滚。",
+			img.Hook.CheckCmd, img.Hook.UpdateCmd)
+		return title, body
 	}
 	switch kind {
 	case model.NotifNewTag:

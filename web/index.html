@@ -169,6 +169,33 @@
   </div>
 </div>
 
+<div id="hook-modal" class="modal" hidden>
+  <div class="modal-card wide">
+    <h3 id="hook-modal-title">脚本检测与更新</h3>
+    <p class="field-hint">
+      本机自建的镜像不在任何仓库上，比不了版本。这里让这一项改由项目自带的脚本判定和更新：
+      <b>检查脚本</b>退出码 <code>10</code> 表示有可用更新、<code>0</code> 表示已是最新、其余表示检查失败；
+      <b>更新脚本</b>退出码 <code>0</code> 表示成功、<code>1</code> 表示脚本已自行回滚、其余按失败处理。
+    </p>
+    <p class="field-hint">
+      脚本在一个一次性辅助容器里执行：上面的 <code>cwd</code> 与 <code>mounts</code> 会按宿主机原路径挂进去，
+      <code>/var/run/docker.sock</code> 总是自动挂上，所以脚本里的 <code>docker</code>、<code>compose</code> 都作用在宿主机上。
+      路径请写宿主机的绝对路径。整份 JSON 可以直接复制粘贴，字段名以这份模板为准。
+    </p>
+    <p class="field-hint">
+      执行脚本等于在这台机器上跑命令，所以<b>必须先在「设置」里填访问密码</b>才能保存这份配置。
+    </p>
+    <textarea id="hook-json" class="json-area mono" rows="16" spellcheck="false"></textarea>
+    <div id="hook-result" class="hook-result" hidden></div>
+    <div class="form-actions">
+      <button type="button" class="btn primary" id="btn-hook-save">保存</button>
+      <button type="button" class="btn ghost" id="btn-hook-check">测试检查</button>
+      <button type="button" class="btn ghost danger" id="btn-hook-clear">清除脚本</button>
+      <button type="button" class="btn ghost" data-close-modal="1">取消</button>
+    </div>
+  </div>
+</div>
+
 <div id="drawer" class="drawer" hidden>
   <div class="drawer-mask" data-close="1"></div>
   <div class="drawer-panel">

@@ -1,6 +1,11 @@
 package model
 
-import "time"
+import (
+	"errors"
+	"path/filepath"
+	"strings"
+	"time"
+)
 
 // DetectMode 检测模式。
 type DetectMode string
@@ -77,6 +82,106 @@ type Image struct {
 	LastError     string    `json:"last_error"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+
+	// Hook 非空且 Enabled 时，本项的检测与更新都走脚本而不是注册表比对。
+	Hook *HookSpec `json:"hook,omitempty"`
+}
+
+// HookSpec 把某个容器监控项的检测与更新改交给项目自带的脚本执行。
+//
+// 背景：本机自建的镜像（kuku2api:local 这类）不在任何注册表上，
+// digest 比对无从谈起；而这些项目的 update.sh 早就实现了
+// 「查上游 → 重建 → 健康检查 → 失败回滚」的完整流程，
+// 且约定 ./update.sh --check 以退出码 10 报告「有可用更新」。
+// 与其在代码里再造一套上游探测，不如把这两个约定接进来。
+//
+// 执行方式是起一个一次性辅助容器（挂载项目目录与 docker.sock），
+// 所以脚本里所有 docker / compose 操作都发生在宿主机守护进程上，
+// 路径必须用宿主机绝对路径并原样挂进辅助容器。
+type HookSpec struct {
+	Enabled       bool              `json:"enabled"`
+	Image         string            `json:"image,omitempty"`  // 辅助容器镜像；留空用全局 HOOK_IMAGE
+	Cwd           string            `json:"cwd"`              // 宿主机项目目录（绝对路径）
+	CheckCmd      string            `json:"check_cmd"`        // 如 ./update.sh --check，退出码 10=有更新
+	UpdateCmd     string            `json:"update_cmd"`       // 如 ./update.sh
+	Mounts        []string          `json:"mounts,omitempty"` // 额外挂载的宿主机绝对路径
+	Env           map[string]string `json:"env,omitempty"`
+	Network       string            `json:"network,omitempty"`        // 留空 bridge；"host" 让脚本能访问宿主机侧代理与端口
+	CheckTimeout  int               `json:"check_timeout,omitempty"`  // 秒，默认 180
+	UpdateTimeout int               `json:"update_timeout,omitempty"` // 秒，默认 1800
+}
+
+// 退出码约定与各 update.sh 的包装脚本一致：1 代表「升级失败但已自动回滚」，
+// 这必须映射成回滚而不是失败，否则卡片会在明明还有旧版在跑时报错。
+const (
+	HookExitUpToDate    = 0
+	HookExitRolled      = 1
+	HookExitUpdateAvail = 10
+)
+
+// EffectiveImage 返回辅助容器镜像，spec 里没写则用全局默认。
+func (h *HookSpec) EffectiveImage(def string) string {
+	if h == nil {
+		return ""
+	}
+	if strings.TrimSpace(h.Image) != "" {
+		return strings.TrimSpace(h.Image)
+	}
+	return strings.TrimSpace(def)
+}
+
+// CheckTimeoutSec / UpdateTimeoutSec 带默认值的超时。
+func (h *HookSpec) CheckTimeoutSec() int {
+	if h.CheckTimeout > 0 {
+		return h.CheckTimeout
+	}
+	return 180
+}
+
+func (h *HookSpec) UpdateTimeoutSec() int {
+	if h.UpdateTimeout > 0 {
+		return h.UpdateTimeout
+	}
+	return 1800
+}
+
+// hostAbsPath 判断是否是宿主机绝对路径。
+//
+// 本服务只部署在 Linux，路径一律以 / 开头；而 Windows 上 filepath.IsAbs 不认
+// "/opt/x"（它要盘符），直接在开发机跑测试会把合法配置判成非法。
+// 两个条件取并集，判断口径仍然只有一个。
+func hostAbsPath(p string) bool {
+	return strings.HasPrefix(p, "/") || filepath.IsAbs(p)
+}
+
+// ValidateHook 把「执行任意宿主机脚本」的输入面收窄成结构化约束。
+func ValidateHook(h *HookSpec, defImage string) error {
+	if h == nil {
+		return errors.New("缺少 hook 配置")
+	}
+	if strings.TrimSpace(h.Cwd) == "" || !hostAbsPath(h.Cwd) {
+		return errors.New("cwd 必须是宿主机绝对路径")
+	}
+	if strings.TrimSpace(h.CheckCmd) == "" {
+		return errors.New("check_cmd 不能为空")
+	}
+	if h.Enabled && strings.TrimSpace(h.UpdateCmd) == "" {
+		return errors.New("启用后 update_cmd 不能为空")
+	}
+	for _, m := range h.Mounts {
+		if !hostAbsPath(m) {
+			return errors.New("mounts 必须是宿主机绝对路径: " + m)
+		}
+	}
+	switch h.Network {
+	case "", "host", "bridge", "none":
+	default:
+		return errors.New("network 仅支持 host / bridge / none")
+	}
+	if h.Enabled && h.EffectiveImage(defImage) == "" {
+		return errors.New("未指定 hook 运行镜像（spec.image 或服务端 HOOK_IMAGE 至少配一个）")
+	}
+	return nil
 }
 
 // LocalImage 是「镜像」标签页上的一行：本机真实存在的镜像，

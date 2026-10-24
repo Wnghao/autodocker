@@ -88,13 +88,13 @@ func TestNotifySuppressesOnlyIgnoredDigest(t *testing.T) {
 	img.RemoteDigest = "sha256:new"
 
 	// 远端摘要没变 → 抑制
-	if sc.notify(ctx, img, model.NotifNewVersion, false) {
+	if sc.notify(ctx, img, model.NotifNewVersion, false, "") {
 		t.Error("已忽略的这一版不应再次推送通知")
 	}
 
 	// 仓库又推了新内容（摘要变了）→ 照常推送
 	img.RemoteDigest = "sha256:newer"
-	if !sc.notify(ctx, img, model.NotifNewVersion, false) {
+	if !sc.notify(ctx, img, model.NotifNewVersion, false, "") {
 		t.Error("远端内容已变化时应重新推送通知")
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/haihaipypy/autodocker/internal/dockerx"
+	"github.com/haihaipypy/autodocker/internal/hookx"
 	"github.com/haihaipypy/autodocker/internal/model"
 	"github.com/haihaipypy/autodocker/internal/store"
 )
@@ -32,6 +33,10 @@ type Options struct {
 	KeepOldContainer  bool
 	SelfContainer     string
 	SelfContainerID   string
+
+	// Hook 是脚本型监控项的执行器。为 nil 时遇到 hook 监控项直接报错，
+	// 而不是悄悄什么也不做 —— 「点了更新、任务显示成功、其实没跑脚本」是最坏的结果。
+	Hook hookx.Executor
 }
 
 // Request 一次更新请求。
@@ -155,10 +160,26 @@ func (u *Updater) Run(ctx context.Context, req Request) error {
 		return fail(errors.New("目标容器启用了自动删除（--rm），停止后会被立即回收、无法回滚，已拒绝更新"))
 	}
 
-	if err := u.st.StartTask(req.TaskID, backupName); err != nil {
+	// compose 归属判定：能被 compose 重建的容器就交回 compose。
+	// 逐容器重建造出来的新容器身上没有 compose 标签，项目从此管不到它（详见 compose.go）。
+	ct := detectCompose(insp)
+	if ct != nil && opt.Hook == nil {
+		logf("注意：该容器属于 compose 项目 %s，但未配置脚本执行器，本次按原配置重建", ct.project)
+		ct = nil
+	}
+
+	// compose 这条路不留重命名的备份容器，任务里也就不写这个字段
+	taskBackup := backupName
+	if ct != nil {
+		taskBackup = ""
+	}
+	if err := u.st.StartTask(req.TaskID, taskBackup); err != nil {
 		u.log.Warn("更新任务状态失败", "err", err)
 	}
 	logf("开始更新容器 %s（镜像 %s，原状态 %s）", origName, req.ImageRef, stateText)
+	if ct != nil {
+		logf("该容器由 compose 管理（项目 %s / 服务 %s），改用 docker compose 重建", ct.project, ct.service)
+	}
 
 	// 先把重建所需配置准备好，任何问题都在动手之前暴露
 	cfg, hostCfg, netCfg, warns := buildSpec(insp, req.ImageRef)
@@ -177,6 +198,16 @@ func (u *Updater) Run(ctx context.Context, req Request) error {
 		return fail(err)
 	}
 	logf("镜像拉取完成")
+
+	// compose 化容器在这里分叉：由 compose 起的服务必须还让 compose 起。
+	if ct != nil {
+		handled, cerr := u.composeUpgrade(ctx, req, insp, ct, wasRunning, opt, logf)
+		if handled {
+			return cerr
+		}
+		// 走到这里说明 compose 预检就没过，脚本保证还没碰过任何容器
+		logf("该服务无法交给 compose，改用按原配置重建")
+	}
 
 	// 停旧容器，腾出容器名与端口
 	if wasRunning {
@@ -239,19 +270,29 @@ func (u *Updater) Run(ctx context.Context, req Request) error {
 	logf("更新完成：%s 已运行在新镜像上", origName)
 
 	// 刷新镜像记录的本地观测值：容器 ID 已变，摘要也应以新镜像为准
-	if img, ferr := u.st.FindImage(req.ImageRef, req.ContainerID); ferr == nil {
-		localDigest := img.LocalDigest
-		if newInsp, ierr := u.dk.InspectContainer(ctx, newID); ierr == nil {
-			if _, d, derr := u.dk.DigestForImage(ctx, newInsp.Image, req.ImageRef); derr == nil && d != "" {
-				localDigest = d
-			}
-		}
-		_ = u.st.UpdateImageLocal(img.ID, newID, origName, localDigest, tagOf(req.ImageRef))
-		_ = u.st.UpdateImageCheck(img.ID, model.StatusUpToDate, localDigest, "", nil, img.Mode, "")
-	}
+	u.refreshAfterUpgrade(ctx, req.ImageRef, req.ContainerID, newID, origName)
 
 	_ = u.st.FinishTask(req.TaskID, model.TaskSuccess, newID, "")
 	return nil
+}
+
+// refreshAfterUpgrade 容器被重建之后，把库里那条监控记录对到新容器上。
+//
+// 不刷的话，页面会拿着「已不存在的容器 ID + 旧镜像摘要」继续判断，
+// 下一次扫描要么查不到容器，要么一直显示「有更新」。
+func (u *Updater) refreshAfterUpgrade(ctx context.Context, imageRef, oldContainerID, newID, name string) {
+	img, ferr := u.st.FindImageByContainer(oldContainerID)
+	if ferr != nil {
+		return
+	}
+	localDigest := img.LocalDigest
+	if newInsp, ierr := u.dk.InspectContainer(ctx, newID); ierr == nil {
+		if _, d, derr := u.dk.DigestForImage(ctx, newInsp.Image, imageRef); derr == nil && d != "" {
+			localDigest = d
+		}
+	}
+	_ = u.st.UpdateImageLocal(img.ID, imageRef, newID, name, localDigest, tagOf(imageRef))
+	_ = u.st.UpdateImageCheck(img.ID, model.StatusUpToDate, localDigest, "", nil, img.Mode, "")
 }
 
 // Pull 只把镜像拉到本地，不碰任何容器。
@@ -335,6 +376,180 @@ func (u *Updater) Pull(ctx context.Context, req PullRequest) error {
 
 	_ = u.st.FinishTask(req.TaskID, model.TaskSuccess, "", "")
 	return nil
+}
+
+// HookRequest 一次「用项目自带脚本更新」请求。
+type HookRequest struct {
+	TaskID        int64
+	ImageRef      string
+	ContainerID   string
+	ContainerName string
+	Spec          *model.HookSpec
+}
+
+// RunHook 执行监控项自带的更新脚本，阻塞至结束。
+//
+// 本地构建的镜像（compose build 出来的那种）没有注册表可比对，更新动作也轮不到
+// Docker API 重建 —— 「怎么更新」写在项目目录里的 update.sh 里。这里只负责把它
+// 跑一遍，再把退出码翻译成任务状态。
+//
+// 回滚一概不做：脚本自己就是带回滚的（退出码 1 的含义是「已回滚」），
+// 这里再猜一次现场，只会把脚本已经处理好的东西搅乱。
+func (u *Updater) RunHook(ctx context.Context, req HookRequest) error {
+	u.mu.Lock()
+	if u.running {
+		u.mu.Unlock()
+		err := errors.New("已有更新任务正在执行，请稍后重试")
+		_ = u.st.FinishTask(req.TaskID, model.TaskFailed, "", err.Error())
+		return err
+	}
+	u.running = true
+	opt := u.opt
+	u.mu.Unlock()
+	defer func() {
+		u.mu.Lock()
+		u.running = false
+		u.mu.Unlock()
+	}()
+
+	name := req.ContainerName
+	logf := func(format string, args ...any) {
+		line := fmt.Sprintf(format, args...)
+		u.log.Info(line, "task_id", req.TaskID, "container", name)
+		if err := u.st.AppendTaskLog(req.TaskID, "["+time.Now().Format("15:04:05")+"] "+line); err != nil {
+			u.log.Warn("写入任务日志失败", "err", err)
+		}
+	}
+	fail := func(err error) error {
+		_ = u.st.FinishTask(req.TaskID, model.TaskFailed, "", err.Error())
+		return err
+	}
+
+	if req.ContainerName == opt.SelfContainer {
+		logf("已阻止：目标 %s 是本服务自身", name)
+		return fail(errors.New("拒绝更新自身容器"))
+	}
+	if opt.Hook == nil {
+		return fail(errors.New("未配置脚本执行器，无法执行 hook 更新"))
+	}
+	spec := req.Spec
+	if spec == nil || strings.TrimSpace(spec.UpdateCmd) == "" {
+		return fail(errors.New("该监控项没有配置更新脚本"))
+	}
+
+	if err := u.st.StartTask(req.TaskID, ""); err != nil {
+		u.log.Warn("更新任务状态失败", "err", err)
+	}
+	logf("开始以更新脚本更新 %s（工作目录 %s）", name, spec.Cwd)
+
+	runCtx, cancelRun := context.WithTimeout(ctx, time.Duration(spec.UpdateTimeoutSec())*time.Second)
+	res, err := opt.Hook.Run(runCtx, spec, spec.UpdateCmd, name)
+	cancelRun()
+	if err != nil {
+		logf("更新脚本未能执行完成")
+		return fail(err)
+	}
+	for _, line := range lastLines(res.Output, 20) {
+		logf("%s", line)
+	}
+
+	switch res.Exit {
+	case model.HookExitUpToDate: // 0：脚本报告更新完成
+	case model.HookExitRolled: // 1：升级失败，脚本已自行回滚
+		msg := "更新脚本执行失败，已由脚本回滚到原版本（详见任务日志）"
+		logf("%s", msg)
+		_ = u.st.FinishTask(req.TaskID, model.TaskRolledBack, req.ContainerID, msg)
+		return errors.New(msg)
+	default:
+		msg := fmt.Sprintf("更新脚本退出码 %d（0=成功 1=已回滚）：%s", res.Exit, briefTail(res.Output, 400))
+		logf("更新脚本异常退出")
+		_ = u.st.FinishTask(req.TaskID, model.TaskFailed, req.ContainerID, msg)
+		return errors.New(msg)
+	}
+	logf("更新脚本执行完成")
+
+	// 回写观测值：脚本重建过镜像，本机那份的镜像 ID 已经变了。
+	// 检测标记（hook@<镜像短ID>）必须跟着换成新的，否则「忽略本版本」会压住
+	// 这一版之后的每一次提醒 —— 那是抑制坏了，不是内容没变。
+	newCID := req.ContainerID
+	rebuilt := false
+	if img, ferr := u.st.FindImage(req.ImageRef, req.ContainerID); ferr == nil {
+		marker := img.RemoteDigest
+		if c, ok := u.findContainerByName(ctx, name); ok {
+			newCID = c.ID
+			rebuilt = c.ImageID != img.ImageID
+			marker = "hook@" + shortImageID(c.ImageID)
+			localDigest := img.LocalDigest
+			if _, d, derr := u.dk.DigestForImage(ctx, c.ImageID, c.Image); derr == nil && d != "" {
+				localDigest = d
+			}
+			_ = u.st.UpdateImageLocal(img.ID, c.Image, c.ID, c.Name, localDigest, tagOf(c.Image))
+		}
+		_ = u.st.UpdateImageCheck(img.ID, model.StatusUpToDate, marker, "", nil, img.Mode, "")
+	}
+
+	if rebuilt {
+		logf("更新完成：%s 已跑在新版本上", name)
+	} else {
+		// 脚本退出 0 但镜像 ID 没变 = 它自己判定无需改动（已是最新）。
+		// 这种情况说「已跑在新版本上」是假的。
+		logf("更新完成：%s 镜像没有变化（脚本判定无需更新）", name)
+	}
+	_ = u.st.FinishTask(req.TaskID, model.TaskSuccess, newCID, "")
+	return nil
+}
+
+// findContainerByName 按容器名找当前容器。
+// 脚本型更新常由 compose 重建容器，ID 会变，只能靠名字回到监控项上。
+func (u *Updater) findContainerByName(ctx context.Context, name string) (dockerx.Container, bool) {
+	if name == "" {
+		return dockerx.Container{}, false
+	}
+	list, err := u.dk.ListContainers(ctx)
+	if err != nil {
+		u.log.Warn("列举容器失败", "err", err)
+		return dockerx.Container{}, false
+	}
+	for _, c := range list {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return dockerx.Container{}, false
+}
+
+// lastLines 取输出末尾 n 行，供逐行写进任务日志。
+func lastLines(s string, n int) []string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	out := make([]string, 0, n)
+	for _, l := range lines {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		out = append(out, l)
+	}
+	if len(out) > n {
+		out = out[len(out)-n:]
+	}
+	return out
+}
+
+// briefTail 把脚本输出压成一行短摘要，供页面的失败小字展示。
+func briefTail(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > n {
+		s = "…" + s[len(s)-n:]
+	}
+	return s
+}
+
+// shortImageID 把 sha256:… 的镜像 ID 压成短码。
+func shortImageID(id string) string {
+	id = strings.TrimPrefix(id, "sha256:")
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
 }
 
 // rollback 把现场恢复到更新之前：删掉新容器、旧容器改回原名并（必要时）重新启动。

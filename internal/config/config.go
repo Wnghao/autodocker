@@ -55,6 +55,11 @@ type Config struct {
 	SelfContainerID   string // 自身容器 ID（容器内 hostname 即短 ID）
 	KeepOldContainer  bool   // 更新成功后是否保留旧容器（默认 false 删除）
 
+	// 脚本型监控项：在一次性辅助容器里跑项目自带的 check/update 脚本。
+	// 默认镜像留空 —— 逼着安装者显式选一个「有 bash 和 docker CLI」的镜像，
+	// 免得脚本在各种精简镜像里以「命令不存在」的退出码失败，还看不出原因。
+	HookImage string
+
 	// 认证
 	AdminUser     string
 	AdminPassword string
@@ -96,6 +101,7 @@ func Load() (*Config, error) {
 		SelfContainer:           envStr("SELF_CONTAINER", "autodocker"),
 		SelfContainerID:         selfContainerID(),
 		KeepOldContainer:        envBool("KEEP_OLD_CONTAINER", false),
+		HookImage:               envStr("HOOK_IMAGE", ""),
 		AdminUser:               envStr("ADMIN_USER", ""),
 		AdminPassword:           envStr("ADMIN_PASSWORD", ""),
 		PublicBaseURL:           strings.TrimRight(envStr("PUBLIC_BASE_URL", ""), "/"),

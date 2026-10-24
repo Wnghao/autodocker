@@ -16,6 +16,7 @@ package dockerx
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -165,6 +166,15 @@ type Container struct {
 	State   string
 	Labels  map[string]string
 	Running bool
+	Ports   []Port // 端口映射，用于给面板算「访问地址」
+}
+
+// Port 容器的一条端口映射。取自 /containers/json 的 Ports 字段。
+type Port struct {
+	IP          string // 绑定地址；空 = 所有网卡，127.0.0.1 = 只有本机能连
+	PrivatePort int    // 容器内端口
+	PublicPort  int    // 宿主机发布端口；0 = 没有可访问的端口
+	Type        string // tcp / udp
 }
 
 // Inspect 容器完整详情。Config / HostConfig 以原始 JSON 保存。
@@ -181,9 +191,10 @@ type Inspect struct {
 
 // State 容器运行状态。
 type State struct {
-	Running bool    `json:"Running"`
-	Status  string  `json:"Status"`
-	Health  *Health `json:"Health"`
+	Running  bool    `json:"Running"`
+	Status   string  `json:"Status"`
+	ExitCode int     `json:"ExitCode"`
+	Health   *Health `json:"Health"`
 }
 
 // Health 健康检查状态。
@@ -241,6 +252,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]Container, error) {
 		ImageID string            `json:"ImageID"`
 		State   string            `json:"State"`
 		Labels  map[string]string `json:"Labels"`
+		Ports   []Port            `json:"Ports"`
 	}
 	if err := c.doJSON(ctx, http.MethodGet, "/containers/json?all=1", nil, &raw); err != nil {
 		return nil, fmt.Errorf("列举容器失败: %w", err)
@@ -260,6 +272,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]Container, error) {
 			State:   item.State,
 			Labels:  item.Labels,
 			Running: item.State == "running",
+			Ports:   item.Ports,
 		})
 	}
 	return out, nil
@@ -368,6 +381,54 @@ func (c *Client) RemoveContainer(ctx context.Context, id string, force, removeVo
 		return fmt.Errorf("删除容器失败: %w", err)
 	}
 	return nil
+}
+
+// ContainerLogs 读取容器合并后的 stdout/stderr 输出。
+//
+// 非 TTY 容器的日志流是 Docker 多路复用帧格式（8 字节头 + 负载），
+// 直接把原始字节当文本会混进一堆乱码帧头，必须 demux。
+func (c *Client) ContainerLogs(ctx context.Context, id string) (string, error) {
+	path := "/containers/" + url.PathEscape(id) + "/logs?stdout=1&stderr=1"
+	resp, err := c.raw(ctx, http.MethodGet, path, nil, "")
+	if err != nil {
+		return "", fmt.Errorf("读取容器日志失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", decodeAPIError(resp)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return "", fmt.Errorf("读取容器日志失败: %w", err)
+	}
+	return DemuxStream(body), nil
+}
+
+// DemuxStream 解析 Docker 多路复用日志帧，把 stdout/stderr 拼成一份纯文本。
+//
+// 识别不了（比如 TTY 容器就没有帧头）时原样返回 —— 宁可有噪声也别丢内容。
+func DemuxStream(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var out []byte
+	for i := 0; i+8 <= len(body); {
+		hdr := body[i : i+8]
+		kind := hdr[0]
+		size := binary.BigEndian.Uint32(hdr[4:8])
+		if kind > 2 {
+			// 不是合法帧头：大概率是 TTY 原始输出，整体按文本返回。
+			return string(body)
+		}
+		if int(size) > len(body)-8-i {
+			// 帧不完整（读取被截断），把剩下的当文本附上。
+			out = append(out, body[i+8:]...)
+			break
+		}
+		out = append(out, body[i+8:i+8+int(size)]...)
+		i += 8 + int(size)
+	}
+	return string(out)
 }
 
 // State 返回容器当前运行状态。
@@ -531,6 +592,27 @@ func (c *Client) RemoveImage(ctx context.Context, imageID string, force bool) er
 		return fmt.Errorf("删除镜像失败: %w", err)
 	}
 	return nil
+}
+
+// TagImage 给本机镜像补一个引用，imageID 可以是镜像 ID。
+//
+// 拉新镜像会把同名 tag 指到新的层，旧那份随即变成没有名字的悬空镜像；
+// 先按 ID 钉一个回滚用的 tag，后面才有个能被 compose 认得的「上一版」。
+func (c *Client) TagImage(ctx context.Context, imageID, repo, tag string) error {
+	q := url.Values{"repo": []string{repo}, "tag": []string{tag}}
+	path := "/images/" + url.PathEscape(imageID) + "/tag?" + q.Encode()
+	if err := c.doJSON(ctx, http.MethodPost, path, nil, nil); err != nil {
+		return fmt.Errorf("给镜像 %s 打标签 %s:%s 失败: %w", shortImage(imageID), repo, tag, err)
+	}
+	return nil
+}
+
+func shortImage(s string) string {
+	s = strings.TrimPrefix(s, "sha256:")
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
 }
 
 // ---- 内部 HTTP ----
