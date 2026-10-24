@@ -15,6 +15,8 @@ services:
       # 必须挂载：这是监控与重建容器的基础
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data:/data
+      # 可选：页面查看 / 编辑 compose 文件（宿主机项目目录 → 面板内挂载点）
+      - /opt/1panel:/host/1panel
     environment:
       - TZ=Asia/Shanghai
       - PORT=17777
@@ -36,7 +38,7 @@ services:
 
       # ---- 通知渠道（默认留空：不填就只是不推通知）----
       # 在网页「设置 → 通知渠道」里选和填，下面这些只作首次启动的初值。
-      # 同一时刻只用一个渠道：feishu / telegram
+      # 填好的渠道都会推送，可同时启用：feishu / telegram / webhook
       # - NOTIFY_CHANNEL=feishu
 
       # ---- 飞书通知 ----
@@ -52,6 +54,13 @@ services:
       # 直连 api.telegram.org 不通时填自建反代地址（不带 /bot 后缀）
       # - TELEGRAM_API_BASE=
 
+      # ---- Webhook 通知（飞书群机器人 / 任意接收 JSON 的地址）----
+      # 只能单向推送：消息上没有按钮，更新结果另发一条。
+      # 格式留空按地址自动识别；机器人没开「签名校验」就留空密钥。
+      # - WEBHOOK_URL=
+      # - WEBHOOK_SECRET=
+      # - WEBHOOK_FORMAT=auto
+
       # ---- 网页登录（默认留空：不启用登录）----
       # 要让端口离开内网，务必设上密码。
       - ADMIN_USER=admin
@@ -64,6 +73,11 @@ services:
       - KEEP_OLD_CONTAINER=false
       # 新容器健康检查观察窗口（秒）
       - HEALTH_CHECK_WAIT=20
+
+      # ---- compose 文件查看 / 编辑（配合上面 volumes 里那条 /opt/1panel）----
+      # 宿主机项目根目录，以及它在容器里的挂载点
+      # - COMPOSE_HOST_ROOT=/opt/1panel
+      # - COMPOSE_MOUNT_ROOT=/host/1panel
 
       # ---- 可选：国内加速 / 私有注册表代理 ----
       # 留空即按「Docker 守护进程的 registry-mirrors → 内置默认」兜底，
